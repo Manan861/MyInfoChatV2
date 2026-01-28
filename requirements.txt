@@ -1,0 +1,5 @@
+chromadb~=1.4.0
+streamlit~=1.52.2
+PyPDF2~=3.0.1
+openai~=2.15.0
+python-dotenv~=1.2.1
