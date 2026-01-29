@@ -22,6 +22,39 @@ vec_db = chromadb.PersistentClient(path="./chroma_db")
 collection = vec_db.get_or_create_collection("resumes")
 
 
+def is_resume(text: str) -> tuple[bool, str]:
+    """Check if the document appears to be a resume. Returns (is_resume, reason)."""
+    try:
+        response = llm.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "system",
+                "content": "You determine if a document is a resume/CV. Return ONLY 'YES' or 'NO' followed by a brief reason."
+            }, {
+                "role": "user",
+                "content": f"""Is this document a resume/CV?
+
+TEXT (first 1500 chars):
+{text[:1500]}
+
+Answer format: YES or NO, then brief reason.
+Example: "YES - contains work experience, education, and skills sections"
+Example: "NO - this is a research paper about machine learning"
+"""
+            }],
+            temperature=0.1,
+            max_tokens=50
+        )
+
+        answer = response.choices[0].message.content.strip()
+        is_yes = answer.upper().startswith("YES")
+        return is_yes, answer
+
+    except Exception as e:
+        # If check fails, allow it through
+        return True, "Could not verify"
+
+
 def extract_metadata(text: str, filename: str) -> dict:
     """Extract author name and summary from resume using LLM - with fallback strategies."""
 
@@ -256,23 +289,30 @@ def get_answer(question: str, context: str, history: list, all_names: list = Non
     response = llm.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": f"""You are a helpful assistant answering questions about resumes in a database.
+            {"role": "system", "content": f"""You are a resume database assistant. You help users learn about candidates in the database.
 
 CURRENT DATE: {current_date}
 
-STRICT ACCURACY RULES:
-1. For questions about how many resumes or listing all candidates → Use the CANDIDATES IN DATABASE list (this is the complete source of truth)
-2. Each chunk is labeled [Name's resume] → ONLY attribute information to that specific person
-3. Before saying "X has skill Y" → Verify Y literally appears in X's chunk text
-4. For "who has X" questions → Scan all chunks for the term X, list only people whose chunks contain it
-5. If a skill/term appears in NO chunks → Say "None of the candidates have [X] mentioned in their resumes"
-6. NEVER invent or assume skills/experience not explicitly stated in the chunks
+WHAT YOU SHOULD DO:
+- Answer questions about the candidates, their skills, experience, education, etc.
+- Summarize resumes when asked
+- Compare candidates
+- Help find candidates matching certain criteria
+- Use conversation history to understand pronouns (he/she/they/them)
 
-PRONOUN HANDLING:
-- Use conversation history to resolve "he/she/they/his/her/their"
-- If unclear who the user means, ask for clarification
+WHAT YOU SHOULD NOT DO:
+- Engage in completely unrelated conversation (e.g., "tell me a joke", "what's the weather", "I'm feeling sad")
+- For truly off-topic messages, say: "I'm here to help with questions about the resumes. What would you like to know about the candidates?"
 
-Be concise and accurate."""},
+ACCURACY RULES:
+1. For listing all candidates → Use the CANDIDATES IN DATABASE list
+2. Each chunk is labeled [Name's resume] → Only attribute info to that specific person
+3. Before saying "X has skill Y" → Verify Y appears in X's chunk
+4. For "who has X" → Only list people whose chunks contain X
+5. If info isn't in any chunk → Say "This isn't mentioned in the resumes"
+6. NEVER invent skills/experience not in the chunks
+
+Be helpful and informative."""},
             {"role": "user",
              "content": f"{context_section}{names_list}{history_text}\n\nQUESTION: {question}"}
         ],
@@ -365,6 +405,12 @@ with st.sidebar:
                     st.warning(f"⚠️ {f.name}: No text extracted")
                     continue
 
+                # Check if it's actually a resume
+                is_valid, reason = is_resume(text)
+                if not is_valid:
+                    st.warning(f"⚠️ {f.name}: This doesn't appear to be a resume. {reason}")
+                    continue
+
                 meta = extract_metadata(text, f.name)
 
                 chunks = chunk_text(text)
@@ -429,15 +475,17 @@ else:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("""
-        <div style="text-align: center; padding: 3rem; background: #f0f2f6; border-radius: 10px;">
-            <h2>👋 Welcome!</h2>
-            <p>Upload resume PDFs in the sidebar to get started.</p>
-            <p style="color: #666;">Example questions:</p>
-            <ul style="text-align: left; display: inline-block;">
-                <li>Whose resumes do you have?</li>
-                <li>Who has Python experience?</li>
-                <li>Tell me about [Name]'s background</li>
-                <li>What are his skills? (after discussing someone)</li>
-            </ul>
+        <div style="text-align: center; padding: 3rem; background: #1a1a2e; border-radius: 15px; border: 1px solid #4A90A4;">
+            <h1 style="color: #4A90A4;">👋 Welcome!</h1>
+            <p style="color: #ffffff; font-size: 1.1rem;">Upload resume PDFs in the sidebar to get started.</p>
+            <hr style="border-color: #4A90A4; margin: 1.5rem 0;">
+            <p style="color: #cccccc;">Example questions you can ask:</p>
+            <div style="text-align: left; display: inline-block; color: #ffffff;">
+                <p>📋 "Whose resumes do you have?"</p>
+                <p>🔍 "Who has experience with Python?"</p>
+                <p>👤 "Tell me about [Name]'s background"</p>
+                <p>📊 "Compare the candidates for a backend role"</p>
+                <p>💬 "What are his skills?" <span style="color: #888;">(uses conversation context)</span></p>
+            </div>
         </div>
         """, unsafe_allow_html=True)
