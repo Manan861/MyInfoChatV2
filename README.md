@@ -11,7 +11,7 @@ An AI-powered resume chatbot that lets you upload resumes and ask natural langua
 
 ## 📋 Features
 
-- **Upload Multiple Resumes** - Supports PDF files, handles 40+ resumes
+- **Upload Multiple Resumes** - Supports PDF files, handles 20+ resumes
 - **Natural Language Queries** - Ask questions in plain English
 - **Smart Search** - Hybrid semantic + keyword search
 - **Candidate Comparison** - Compare candidates side by side
@@ -38,7 +38,7 @@ An AI-powered resume chatbot that lets you upload resumes and ask natural langua
 | **LLM** | OpenAI GPT-4o |
 | **Vector Database** | ChromaDB |
 | **PDF Processing** | PyPDF2 |
-| **Language** | Python 3.10+ |
+| **Language** | Python 3.11.9 |
 
 ### Architecture
 
@@ -62,7 +62,7 @@ An AI-powered resume chatbot that lets you upload resumes and ask natural langua
 ## 📦 Installation
 
 ### Prerequisites
-- Python 3.10 or higher
+- Python 3.11.9 or higher
 - OpenAI API key
 
 ### Steps
@@ -95,7 +95,7 @@ echo "OPENAI_API_KEY=your_api_key_here" > .env
 streamlit run app.py
 ```
 
-The app will open at `http://localhost:8501`
+The app will open at localhost
 
 ---
 
@@ -123,8 +123,6 @@ resume-rag/
 ├── .gitignore         # Git ignore file
 ├── README.md          # This file
 ├── chroma_db/         # Vector database storage (auto-created)
-└── screenshots/       # Screenshots for documentation
-    └── main.png
 ```
 
 ---
