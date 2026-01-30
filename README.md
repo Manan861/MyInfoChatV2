@@ -5,7 +5,7 @@ An AI-powered resume chatbot that lets you upload resumes and ask natural langua
 
 ## 🚀 Live Demo
 
-**Deployment Link:** https://myinfochatv2-eam8hl5esdtw5gzkiaqvnj.streamlit.app/
+**Deployment Link:** https://myinfochatv2-5lvauqdcvetmehkidybeic.streamlit.app/
 
 ---
 
@@ -111,27 +111,7 @@ The app will open at `http://localhost:8501`
    - Add: `OPENAI_API_KEY = "your_key_here"`
 5. Deploy!
 
-### Docker
 
-```bash
-# Build
-docker build -t resume-rag .
-
-# Run
-docker run -p 8501:8501 -e OPENAI_API_KEY=your_key resume-rag
-```
-
-### Manual Server Deployment
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run with nohup
-nohup streamlit run app.py --server.port 8501 &
-```
-
----
 
 ## 📁 Project Structure
 
@@ -163,37 +143,11 @@ resume-rag/
 ## 📸 Screenshots
 
 ### Main Interface
-![Main Interface](screenshots/main.png)
+![Main Interface](Images/LandingPage.png)
 
 ### Upload Resumes
-![Upload](screenshots/upload.png)
+![Upload](Images/ResumesLoading.png)
 
 ### Search Results
-![Search](screenshots/search.png)
+![Search](Images/Search.png)
 
-### Candidate Comparison
-![Compare](screenshots/compare.png)
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
----
-
-## 🙏 Acknowledgments
-
-- OpenAI for GPT-4o
-- Streamlit for the amazing framework
-- ChromaDB for vector storage
