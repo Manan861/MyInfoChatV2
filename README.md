@@ -1,0 +1,199 @@
+# Resume RAG System
+
+An AI-powered resume chatbot that lets you upload resumes and ask natural language questions about candidates.
+
+
+## 🚀 Live Demo
+
+**Deployment Link:** https://myinfochatv2-eam8hl5esdtw5gzkiaqvnj.streamlit.app/
+
+---
+
+## 📋 Features
+
+- **Upload Multiple Resumes** - Supports PDF files, handles 40+ resumes
+- **Natural Language Queries** - Ask questions in plain English
+- **Smart Search** - Hybrid semantic + keyword search
+- **Candidate Comparison** - Compare candidates side by side
+- **Skill Matching** - Find candidates with specific skills
+- **Conversation Memory** - Understands follow-up questions and pronouns
+- **Resume Validation** - Automatically rejects non-resume documents
+
+### Example Questions You Can Ask:
+- "Whose resumes do you have?"
+- "Who has Python experience?"
+- "Tell me about John's background"
+- "Compare the candidates for a backend role"
+- "Who would be best for a data science position?"
+- "What was she doing in Jan 2025?" (uses conversation context)
+- "Who has AWS and React experience?"
+
+---
+
+## 🛠 Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| **Frontend** | Streamlit |
+| **LLM** | OpenAI GPT-4o |
+| **Vector Database** | ChromaDB |
+| **PDF Processing** | PyPDF2 |
+| **Language** | Python 3.10+ |
+
+### Architecture
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│                 │     │                 │     │                 │
+│   PDF Upload    │────▶│  Text Chunks    │────▶│   ChromaDB      │
+│                 │     │  + Metadata     │     │   (Vectors)     │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+                                                        │
+                                                        ▼
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│                 │     │                 │     │                 │
+│   Response      │◀────│    GPT-4o       │◀────│  Hybrid Search  │
+│                 │     │                 │     │ (Semantic+KW)   │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+```
+
+---
+
+## 📦 Installation
+
+### Prerequisites
+- Python 3.10 or higher
+- OpenAI API key
+
+### Steps
+
+1. **Clone the repository**
+```bash
+git clone https://github.com/yourusername/resume-rag.git
+cd resume-rag
+```
+
+2. **Create virtual environment**
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. **Install dependencies**
+```bash
+pip install -r requirements.txt
+```
+
+4. **Set up environment variables**
+```bash
+# Create .env file
+echo "OPENAI_API_KEY=your_api_key_here" > .env
+```
+
+5. **Run the application**
+```bash
+streamlit run app.py
+```
+
+The app will open at `http://localhost:8501`
+
+---
+
+## 🚀 Deployment
+
+### Streamlit Cloud (Recommended)
+
+1. Push your code to GitHub
+2. Go to [share.streamlit.io](https://share.streamlit.io)
+3. Connect your GitHub repo
+4. Add your `OPENAI_API_KEY` in Streamlit secrets:
+   - Go to App Settings → Secrets
+   - Add: `OPENAI_API_KEY = "your_key_here"`
+5. Deploy!
+
+### Docker
+
+```bash
+# Build
+docker build -t resume-rag .
+
+# Run
+docker run -p 8501:8501 -e OPENAI_API_KEY=your_key resume-rag
+```
+
+### Manual Server Deployment
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run with nohup
+nohup streamlit run app.py --server.port 8501 &
+```
+
+---
+
+## 📁 Project Structure
+
+```
+resume-rag/
+├── app.py              # Main application
+├── requirements.txt    # Python dependencies
+├── .env               # Environment variables (not in repo)
+├── .gitignore         # Git ignore file
+├── README.md          # This file
+├── chroma_db/         # Vector database storage (auto-created)
+└── screenshots/       # Screenshots for documentation
+    └── main.png
+```
+
+---
+
+## 🔧 Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Chunk Size | 300 words | Size of text chunks for processing |
+| Chunk Overlap | 75 words | Overlap between consecutive chunks |
+| Max Chunks to LLM | 70 | Maximum chunks sent to GPT-4o |
+| Conversation History | 5 | Number of previous Q&A pairs remembered |
+
+---
+
+## 📸 Screenshots
+
+### Main Interface
+![Main Interface](screenshots/main.png)
+
+### Upload Resumes
+![Upload](screenshots/upload.png)
+
+### Search Results
+![Search](screenshots/search.png)
+
+### Candidate Comparison
+![Compare](screenshots/compare.png)
+
+---
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License.
+
+---
+
+## 🙏 Acknowledgments
+
+- OpenAI for GPT-4o
+- Streamlit for the amazing framework
+- ChromaDB for vector storage
