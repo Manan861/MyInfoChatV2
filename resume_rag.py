@@ -11,6 +11,9 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import PyPDF2
 import datetime
+import requests
+import re
+import html
 
 load_dotenv()
 
@@ -420,6 +423,378 @@ Answer thoroughly and accurately based on the data provided."""},
     return response.choices[0].message.content
 
 
+# ============== TOOLS (Me mode: 3 tools = semantic search, web search about person, GitHub) ==============
+
+def tool_web_search(candidate_name: str, question: str, for_weather: bool = False) -> str:
+    """Web search: only for (1) info about the person or (2) weather. Nothing else."""
+    try:
+        if for_weather:
+            location = extract_weather_location(question)
+            if not location:
+                return "Please include a city for weather, for example: 'weather in Boston'."
+            geo = requests.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": location, "count": 1, "language": "en", "format": "json"},
+                timeout=10,
+            )
+            geo.raise_for_status()
+            geo_data = geo.json()
+            results = geo_data.get("results") or []
+            if not results:
+                return f"Could not find location '{location}'. Try a city and state/country."
+
+            place = results[0]
+            lat, lon = place.get("latitude"), place.get("longitude")
+            city = place.get("name") or location
+            admin = place.get("admin1") or ""
+            country = place.get("country") or ""
+
+            weather = requests.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "current": "temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code",
+                    "timezone": "auto",
+                },
+                timeout=10,
+            )
+            weather.raise_for_status()
+            cur = (weather.json() or {}).get("current", {})
+            if not cur:
+                return f"No current weather data returned for {city}."
+
+            code = int(cur.get("weather_code", -1))
+            label = {
+                0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+                45: "Fog", 48: "Depositing rime fog",
+                51: "Light drizzle", 53: "Drizzle", 55: "Dense drizzle",
+                61: "Slight rain", 63: "Rain", 65: "Heavy rain",
+                71: "Slight snow", 73: "Snow", 75: "Heavy snow",
+                80: "Rain showers", 81: "Rain showers", 82: "Violent rain showers",
+                95: "Thunderstorm",
+            }.get(code, f"Code {code}")
+            loc = ", ".join([x for x in [city, admin, country] if x])
+            return (
+                f"{loc}: {label}. "
+                f"Temperature {cur.get('temperature_2m')}°C, "
+                f"humidity {cur.get('relative_humidity_2m')}%, "
+                f"wind {cur.get('wind_speed_10m')} km/h."
+            )
+
+        # Person web search path
+        specific_terms = extract_search_focus(question, candidate_name)
+        query = f"\"{candidate_name}\" {specific_terms}".strip()
+
+        lines = []
+        try:
+            from duckduckgo_search import DDGS
+            ddg_results = list(DDGS().text(query[:220], max_results=6))
+            for r in ddg_results:
+                title = (r.get("title") or "").strip()
+                body = (r.get("body") or "").strip()
+                href = (r.get("href") or "").strip()
+                if title or body:
+                    lines.append(f"- {title}: {body[:220]} ({href})" if href else f"- {title}: {body[:220]}")
+        except Exception:
+            pass
+
+        if not lines:
+            # Fallback: DuckDuckGo instant answer API
+            ia = requests.get(
+                "https://api.duckduckgo.com/",
+                params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
+                timeout=10,
+            )
+            ia.raise_for_status()
+            data = ia.json()
+            abstract = (data.get("AbstractText") or "").strip()
+            abstract_url = (data.get("AbstractURL") or "").strip()
+            heading = (data.get("Heading") or candidate_name).strip()
+            if abstract:
+                lines.append(f"- {heading}: {abstract[:300]} ({abstract_url})" if abstract_url else f"- {heading}: {abstract[:300]}")
+
+            for topic in (data.get("RelatedTopics") or [])[:5]:
+                if isinstance(topic, dict):
+                    text = (topic.get("Text") or "").strip()
+                    url = (topic.get("FirstURL") or "").strip()
+                    if text:
+                        lines.append(f"- {text[:220]} ({url})" if url else f"- {text[:220]}")
+
+        return "\n".join(lines) if lines else "No web results found for this person."
+    except Exception as e:
+        return f"Web search failed: {e}"
+
+
+def tool_github(username: str) -> str:
+    """Fetch GitHub profile and top repos for the given username."""
+    if not (username or "").strip():
+        return "No GitHub username set. Add your GitHub username in the sidebar (Me mode)."
+    try:
+        u = (username or "").strip()
+        r = requests.get(f"https://api.github.com/users/{u}", timeout=10)
+        if r.status_code == 404:
+            return f"GitHub user '{u}' not found."
+        r.raise_for_status()
+        profile = r.json()
+        bio = profile.get("bio") or ""
+        name = profile.get("name") or u
+        public_repos = profile.get("public_repos", 0)
+        repos_r = requests.get(
+            f"https://api.github.com/users/{u}/repos?sort=updated&per_page=8",
+            timeout=10,
+        )
+        repos_r.raise_for_status()
+        repos = repos_r.json()
+        repo_lines = [f"- {repo.get('name', '')}: {repo.get('description') or 'No description'}" for repo in repos]
+        return f"GitHub: {name} (@{u}). Bio: {bio}. Public repos: {public_repos}.\nTop repos:\n" + "\n".join(repo_lines)
+    except Exception as e:
+        return f"GitHub lookup failed: {e}"
+
+
+def get_all_resume_chunks_for_candidate(candidate_name: str) -> str:
+    """Get every chunk for one candidate (for open-ended summary requests)."""
+    try:
+        result = collection.get(
+            where={"name": candidate_name},
+            include=["documents", "metadatas"],
+        )
+        if not result or not result.get("documents"):
+            return ""
+        docs = result["documents"]
+        return "\n\n---\n\n".join(f"[{candidate_name}'s resume]:\n{d}" for d in docs)
+    except Exception:
+        return ""
+
+
+def needs_full_resume(question: str) -> bool:
+    """Ask LLM whether this question needs the full resume (summary/intro) vs specific search."""
+    try:
+        response = llm.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Does this question ask for a full summary, introduction, or overview of the person (so we need the entire resume)? Reply with ONLY YES or NO.",
+                },
+                {"role": "user", "content": question.strip()},
+            ],
+            temperature=0,
+            max_tokens=5,
+        )
+        return (response.choices[0].message.content or "").strip().upper().startswith("YES")
+    except Exception:
+        return False
+
+
+def extract_weather_location(question: str) -> str:
+    """Extract likely location from weather question, e.g. 'weather in Boston'."""
+    q = (question or "").strip()
+    if not q:
+        return ""
+    lowered = q.lower()
+    match = re.search(r"\b(?:in|at|for)\s+([a-zA-Z][a-zA-Z\s,.-]{1,60})$", lowered)
+    if match:
+        return match.group(1).strip(" ?!.,")
+    match = re.search(r"\bweather\s+([a-zA-Z][a-zA-Z\s,.-]{1,60})$", lowered)
+    if match:
+        return match.group(1).strip(" ?!.,")
+    return ""
+
+
+def extract_search_focus(question: str, candidate_name: str) -> str:
+    """Keep only useful focus terms from person web-search question."""
+    q = (question or "").lower()
+    q = q.replace(candidate_name.lower(), " ")
+    for phrase in (
+        "search the web", "web search", "google", "look up", "look me up",
+        "find online", "what does the web say", "about me", "about this person",
+        "search for", "search me", "find me online", "online",
+    ):
+        q = q.replace(phrase, " ")
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", q)
+    tokens = [t for t in cleaned.split() if len(t) > 2]
+    return " ".join(tokens[:8])
+
+
+def is_weather_query(question: str) -> bool:
+    """Detect weather-related requests."""
+    q = (question or "").lower()
+    return any(phrase in q for phrase in (
+        "weather", "temperature", "forecast", "how hot", "how cold",
+        "weather like", "rain", "sunny", "humidity", "wind",
+    ))
+
+
+def is_github_query(question: str) -> bool:
+    q = (question or "").lower()
+    return any(phrase in q for phrase in ("github", "git hub", "repos", "repositories", "repo", "projects on github"))
+
+
+def is_self_resume_query(question: str) -> bool:
+    """Recruiter-style prompts that should use resume context in Me mode."""
+    q = (question or "").strip().lower()
+    return any(phrase in q for phrase in (
+        "tell me about yourself",
+        "tell me more about yourself",
+        "introduce yourself",
+        "walk me through your background",
+        "your background",
+        "your experience",
+        "your skills",
+        "your resume",
+        "why should we hire you",
+        "what are your strengths",
+    ))
+
+
+def is_small_talk(question: str) -> bool:
+    q = (question or "").strip().lower()
+    return any(phrase in q for phrase in (
+        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+        "nice to meet you", "how are you",
+    ))
+
+
+def resolve_person_from_question(question: str, candidates: list, selected: str = None) -> str:
+    """Resolve target candidate by explicit mention, then selected filter, then first candidate."""
+    if not candidates:
+        return "The candidate"
+    q = (question or "").lower()
+    for name in sorted(candidates, key=len, reverse=True):
+        if name and name.lower() in q:
+            return name
+    if selected and selected != "All" and selected in candidates:
+        return selected
+    return candidates[0]
+
+
+def select_tool(question: str) -> str:
+    """Choose which tool: resume (semantic search), web_search (person or weather only), github, or deny."""
+    q = (question or "").strip().lower()
+    if is_self_resume_query(question):
+        return "resume"
+    if is_github_query(question):
+        return "github"
+    # Weather → web search only (no other web use)
+    if is_weather_query(question):
+        return "web_search"
+    # Any explicit web lookup intent should route to the constrained person web tool
+    if ("search" in q or "web" in q or "online" in q or "google" in q or "look up" in q) and "github" not in q:
+        return "web_search"
+    # Explicit web search about the person → web search
+    if any(phrase in q for phrase in (
+        "web search", "search for", "search me", "what does the web say",
+        "find me online", "google me", "look me up", "what's online about",
+        "what do you find about", "search the web for", "look up", "find online",
+    )):
+        return "web_search"
+    # Follow-ups about a specific term = resume
+    if any(phrase in q for phrase in ("what about", "tell me about", "and ", "also ", "your ", "my ")):
+        if not any(phrase in q for phrase in ("github", "search the")):
+            return "resume"
+    try:
+        response = llm.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """You decide which tool to use. Reply with ONLY one word:
+- resume: background, experience, skills, education, career, job history, resume (semantic search)
+- web_search: ONLY when they ask (a) what the web says about this person, OR (b) weather/temperature/forecast. No other web search.
+- github: when they ask for GitHub, repos, code, "my github", "my projects"
+- deny: general news, random facts, any other web search. Weather and "search for me" are web_search, not deny."""
+                },
+                {"role": "user", "content": question.strip()},
+            ],
+            temperature=0,
+            max_tokens=15,
+        )
+        choice = (response.choices[0].message.content or "").strip().lower().replace(" ", "_")
+        if choice in ("resume", "web_search", "web_search_person", "github", "deny"):
+            return "web_search" if choice == "web_search_person" else choice
+    except Exception:
+        pass
+    return "resume"
+
+
+def infer_github_username_from_resume(candidate_name: str) -> str:
+    """Infer GitHub username from resume links for the candidate."""
+    if not candidate_name or candidate_name == "The candidate":
+        return ""
+    try:
+        result = collection.get(where={"name": candidate_name}, include=["documents"])
+        docs = result.get("documents") or []
+        text = "\n".join(docs)
+        # Handle github.com/user or github.com/user/repo
+        matches = re.findall(r"github\.com/([A-Za-z0-9-]{1,39})", text, flags=re.IGNORECASE)
+        if not matches:
+            return ""
+        bad = {"features", "topics", "orgs", "organizations", "settings", "marketplace", "apps"}
+        for m in matches:
+            if m.lower() not in bad:
+                return m
+        return matches[0]
+    except Exception:
+        return ""
+
+
+def get_answer_impersonation(
+    question: str,
+    resume_context: str,
+    web_search_data: str,
+    github_data: str,
+    candidate_name: str,
+    history: list,
+) -> str:
+    """Generate answer as the candidate (you) talking to a recruiter, using only tool data."""
+    current_date = datetime.datetime.now().strftime("%B %d, %Y")
+    history_text = ""
+    if history:
+        history_text = "\n\nCONVERSATION:\n" + "\n".join(
+            [f"Recruiter: {h['q']}\nYou: {h['a'][:200]}" for h in history[-5:]]
+        )
+
+    tools_block = f"""
+RESUME DATA (semantic search – use for background/skills/experience):
+{resume_context or "No resume data for this question."}
+
+WEB SEARCH (about this person or weather – only these use the web):
+{web_search_data or "Not fetched."}
+
+GITHUB:
+{github_data or "Not fetched."}
+"""
+
+    response = llm.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {
+                "role": "system",
+                "content": f"""You are {candidate_name}, a candidate. A recruiter is chatting with you. Today is {current_date}.
+
+STRICT RULES – NO HALLUCINATION:
+1. Your ONLY sources of truth are the TOOLS block below. Do not use your training knowledge for resume, experience, skills, companies, or education.
+2. If the RESUME DATA does not mention something, say "That's not on my resume" or "I don't have that in the info you have" – do NOT make it up.
+3. For resume/career: answer only from RESUME DATA. Paraphrase or quote that text only.
+4. For "what does the web say about me" / "search for me": use only the WEB SEARCH block. Summarize what was found.
+5. For weather / temperature / forecast: use only the WEB SEARCH block (live weather from web). Answer briefly.
+6. For GitHub / repos / code: use only the GITHUB block. If it says no username set, say you can add it in the sidebar.
+7. Never invent job titles, companies, dates, skills, or education. If it's not in the block, say you don't have that information.
+8. For "tell me about yourself" or similar: include EVERY notable detail from RESUME DATA (all companies, projects, roles, skills, achievements). Do not omit anything that appears in the data.""",
+
+            },
+            {
+                "role": "user",
+                "content": f"{tools_block}{history_text}\n\nRecruiter asks: {question}\n\nYour reply (only from the data above):",
+            },
+        ],
+        temperature=0,
+        max_tokens=1500,
+    )
+    return response.choices[0].message.content
+
+
 # ============== STREAMLIT APP ==============
 
 st.set_page_config(page_title="Resume RAG", page_icon="📄", layout="wide")
@@ -428,6 +803,36 @@ st.markdown("""
 <style>
     .stApp { max-width: 1200px; margin: 0 auto; }
     .main-header { text-align: center; padding: 1rem 0; border-bottom: 2px solid #4A90A4; margin-bottom: 2rem; }
+    .chat-row { display: flex; margin: 0.55rem 0; }
+    .chat-row.user { justify-content: flex-end; }
+    .chat-row.assistant { justify-content: flex-start; }
+    .chat-bubble {
+        max-width: 78%;
+        padding: 0.85rem 1rem;
+        border-radius: 14px;
+        line-height: 1.45;
+        font-size: 1.02rem;
+        border: 1px solid rgba(255,255,255,0.09);
+        box-shadow: 0 4px 18px rgba(0,0,0,0.2);
+        white-space: normal;
+        word-wrap: break-word;
+    }
+    .chat-row.user .chat-bubble {
+        background: linear-gradient(135deg, #2f3d63, #445a9c);
+        color: #f7f9ff;
+    }
+    .chat-row.assistant .chat-bubble {
+        background: rgba(255,255,255,0.05);
+        color: #f4f6ff;
+    }
+    .chat-tag {
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        opacity: 0.8;
+        text-transform: uppercase;
+        margin-bottom: 0.25rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -437,9 +842,43 @@ st.caption("Ask questions about uploaded resumes using AI-powered search")
 if "history" not in st.session_state:
     st.session_state.history = []
 
+
+def render_chat_bubble(role: str, message: str) -> None:
+    safe = html.escape(message or "").replace("\n", "<br>")
+    tag = "Recruiter" if role == "user" else "Candidate"
+    st.markdown(
+        f"""
+        <div class="chat-row {role}">
+            <div class="chat-bubble">
+                <div class="chat-tag">{tag}</div>
+                <div>{safe}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
+
+    app_mode = st.radio(
+        "Mode",
+        ["Recruiter (browse candidates)", "Me (recruiter talks to me)"],
+        index=0,
+        help="Recruiter: multi-candidate Q&A. Me: you as candidate, 3 tools (semantic search, web search about you, GitHub).",
+    )
+    me_mode = "Me" in app_mode
+
+    if me_mode:
+        if "github_username" not in st.session_state:
+            st.session_state.github_username = ""
+        st.session_state.github_username = st.text_input(
+            "GitHub username (for Me mode)",
+            value=st.session_state.github_username,
+            placeholder="e.g. octocat",
+            help="Your GitHub handle so the bot can fetch your profile and repos.",
+        )
 
     candidates = get_all_candidates()
     resume_count = get_resume_count()
@@ -518,28 +957,116 @@ if collection.count() > 0:
         with st.chat_message("assistant", avatar="🤖"):
             st.write(h["a"])
 
-    if question := st.chat_input("Ask about the candidates..."):
+    prompt_label = "Ask about the candidates..." if not me_mode else "Ask me anything (resume, web search about you, GitHub)..."
+    if question := st.chat_input(prompt_label):
         with st.chat_message("user", avatar="👤"):
             st.write(question)
 
         with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("Searching..."):
-                candidates = get_all_candidates()
-                rewritten = rewrite_query(question, st.session_state.history, candidates)
-                context, meta = search_resumes(rewritten, question, selected, candidates)
-                answer = get_answer(question, context, st.session_state.history, candidates)
+            if me_mode:
+                # Me mode: 3 tools = semantic search (resume), web search about person, GitHub
+                tool = select_tool(question)
+                candidate_name = resolve_person_from_question(question, candidates, selected)
+                resume_ctx = ""
+                web_search_data = ""
+                github_data = ""
 
-            st.write(answer)
+                if tool == "deny":
+                    if is_small_talk(question):
+                        answer = "Great to meet you. I can walk you through my background, skills, projects, GitHub, or current weather in a location."
+                    else:
+                        # In Me mode, default to resume context for recruiter-style chat instead of hard denying.
+                        use_full = me_mode and candidates and needs_full_resume(question)
+                        if use_full:
+                            resume_ctx = get_all_resume_chunks_for_candidate(
+                                selected if selected and selected != "All" else candidates[0]
+                            )
+                        else:
+                            rewritten = rewrite_query(question, st.session_state.history, candidates)
+                            resume_ctx, _ = search_resumes(rewritten, question, selected, candidates)
+                        answer = get_answer_impersonation(
+                            question,
+                            resume_context=resume_ctx,
+                            web_search_data="",
+                            github_data="",
+                            candidate_name=candidate_name,
+                            history=st.session_state.history,
+                        )
+                else:
+                    if tool == "resume":
+                        use_full = me_mode and candidates and needs_full_resume(question)
+                        if use_full:
+                            resume_ctx = get_all_resume_chunks_for_candidate(
+                                selected if selected and selected != "All" else candidates[0]
+                            )
+                        else:
+                            rewritten = rewrite_query(question, st.session_state.history, candidates)
+                            resume_ctx, _ = search_resumes(rewritten, question, selected, candidates)
+                    if tool == "web_search":
+                        is_weather = is_weather_query(question)
+                        web_search_data = tool_web_search(candidate_name, question, for_weather=is_weather)
+                    if tool == "github":
+                        github_username = st.session_state.get("github_username", "").strip() or infer_github_username_from_resume(candidate_name)
+                        github_data = tool_github(github_username)
 
-            with st.expander("🔍 Debug"):
-                st.text(f"Original: {question}")
-                st.text(f"Rewritten: {rewritten}")
-                st.text(f"Chunks retrieved: {len(meta)}")
-                if meta:
-                    sources = list(set(m.get('name', '?') for m in meta))
-                    st.text(f"Sources ({len(sources)}): {', '.join(sources[:15])}")
-                    if len(sources) > 15:
-                        st.text(f"... and {len(sources) - 15} more")
+                    if tool == "web_search":
+                        if is_weather_query(question):
+                            answer = f"Weather:\n{web_search_data}"
+                        else:
+                            answer = f"Web results about {candidate_name}:\n{web_search_data}"
+                    elif tool == "github":
+                        answer = github_data
+                    else:
+                        answer = get_answer_impersonation(
+                            question,
+                            resume_context=resume_ctx,
+                            web_search_data=web_search_data,
+                            github_data=github_data,
+                            candidate_name=candidate_name,
+                            history=st.session_state.history,
+                        )
+
+                with st.spinner("Thinking..."):
+                    pass  # already computed above
+
+                st.write(answer)
+                with st.expander("🔍 Debug (Me mode)"):
+                    st.text(f"Tool used: {tool}")
+            else:
+                with st.spinner("Searching..."):
+                    candidates_list = get_all_candidates()
+                    tool = select_tool(question)
+                    target_name = resolve_person_from_question(question, candidates_list, selected)
+
+                    if tool == "web_search":
+                        data = tool_web_search(target_name, question, for_weather=is_weather_query(question))
+                        if is_weather_query(question):
+                            answer = f"Weather:\n{data}"
+                        else:
+                            answer = f"Web results about {target_name}:\n{data}"
+                        rewritten = question
+                        meta = []
+                    elif tool == "github":
+                        gh_user = infer_github_username_from_resume(target_name)
+                        answer = tool_github(gh_user)
+                        rewritten = question
+                        meta = []
+                    else:
+                        rewritten = rewrite_query(question, st.session_state.history, candidates_list)
+                        context, meta = search_resumes(rewritten, question, selected, candidates_list)
+                        answer = get_answer(question, context, st.session_state.history, candidates_list)
+
+                st.write(answer)
+                with st.expander("🔍 Debug"):
+                    st.text(f"Original: {question}")
+                    st.text(f"Rewritten: {rewritten}")
+                    st.text(f"Tool used: {tool}")
+                    st.text(f"Chunks retrieved: {len(meta)}")
+                    if meta:
+                        sources = list(set(m.get("name", "?") for m in meta))
+                        st.text(f"Sources ({len(sources)}): {', '.join(sources[:15])}")
+                        if len(sources) > 15:
+                            st.text(f"... and {len(sources) - 15} more")
 
         st.session_state.history.append({"q": question, "a": answer})
         st.rerun()
