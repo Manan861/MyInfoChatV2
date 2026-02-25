@@ -485,21 +485,62 @@ def tool_web_search(candidate_name: str, question: str, for_weather: bool = Fals
         # Person web search path
         specific_terms = extract_search_focus(question, candidate_name)
         query = f"\"{candidate_name}\" {specific_terms}".strip()
-
+        query_variants = [
+            query,
+            f"\"{candidate_name}\" linkedin",
+            f"\"{candidate_name}\" github",
+        ]
         lines = []
+        seen = set()
+
+        # Seed with profile links found in resume text (high-confidence identity anchors)
+        profile_links = extract_profile_links_from_resume(candidate_name)
+        for link in profile_links:
+            if link not in seen:
+                seen.add(link)
+                lines.append(f"- Profile found in resume: {link}")
+
         try:
             from duckduckgo_search import DDGS
-            ddg_results = list(DDGS().text(query[:220], max_results=6))
-            for r in ddg_results:
-                title = (r.get("title") or "").strip()
-                body = (r.get("body") or "").strip()
-                href = (r.get("href") or "").strip()
-                if title or body:
-                    lines.append(f"- {title}: {body[:220]} ({href})" if href else f"- {title}: {body[:220]}")
+            for qv in query_variants:
+                ddg_results = list(DDGS().text(qv[:220], max_results=5))
+                for r in ddg_results:
+                    title = (r.get("title") or "").strip()
+                    body = (r.get("body") or "").strip()
+                    href = (r.get("href") or "").strip()
+                    dedupe_key = href or f"{title}-{body[:80]}"
+                    if dedupe_key in seen:
+                        continue
+                    if title or body:
+                        seen.add(dedupe_key)
+                        lines.append(f"- {title}: {body[:220]} ({href})" if href else f"- {title}: {body[:220]}")
+                if len(lines) >= 8:
+                    break
         except Exception:
             pass
 
-        if not lines:
+        if len(lines) < 3:
+            # Fallback: scrape DDG html endpoint
+            try:
+                html_resp = requests.get(
+                    "https://duckduckgo.com/html/",
+                    params={"q": query},
+                    timeout=10,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                html_resp.raise_for_status()
+                for title, url in parse_ddg_html_results(html_resp.text, max_results=8):
+                    dedupe_key = url or title
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    lines.append(f"- {title} ({url})" if url else f"- {title}")
+                    if len(lines) >= 8:
+                        break
+            except Exception:
+                pass
+
+        if len(lines) < 3:
             # Fallback: DuckDuckGo instant answer API
             ia = requests.get(
                 "https://api.duckduckgo.com/",
@@ -518,12 +559,29 @@ def tool_web_search(candidate_name: str, question: str, for_weather: bool = Fals
                 if isinstance(topic, dict):
                     text = (topic.get("Text") or "").strip()
                     url = (topic.get("FirstURL") or "").strip()
-                    if text:
+                    dedupe_key = url or text[:120]
+                    if text and dedupe_key not in seen:
+                        seen.add(dedupe_key)
                         lines.append(f"- {text[:220]} ({url})" if url else f"- {text[:220]}")
 
         return "\n".join(lines) if lines else "No web results found for this person."
     except Exception as e:
         return f"Web search failed: {e}"
+
+
+def parse_ddg_html_results(page_html: str, max_results: int = 8) -> list[tuple[str, str]]:
+    """Parse result titles/urls from DuckDuckGo HTML page."""
+    out = []
+    if not page_html:
+        return out
+    pattern = re.compile(r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', re.IGNORECASE)
+    for href, raw_title in pattern.findall(page_html):
+        title = re.sub(r"<.*?>", "", raw_title).strip()
+        if title:
+            out.append((title, href))
+        if len(out) >= max_results:
+            break
+    return out
 
 
 def tool_github(username: str) -> str:
@@ -739,6 +797,31 @@ def infer_github_username_from_resume(candidate_name: str) -> str:
         return ""
 
 
+def extract_profile_links_from_resume(candidate_name: str) -> list[str]:
+    """Extract likely online profile URLs from resume content."""
+    if not candidate_name or candidate_name == "The candidate":
+        return []
+    try:
+        result = collection.get(where={"name": candidate_name}, include=["documents"])
+        docs = result.get("documents") or []
+        text = "\n".join(docs)
+        urls = re.findall(r"https?://[^\s)>\"]+", text, flags=re.IGNORECASE)
+        keep = []
+        for u in urls:
+            ul = u.lower()
+            if any(d in ul for d in ("github.com/", "linkedin.com/in/", "medium.com/", "x.com/", "twitter.com/")):
+                keep.append(u.rstrip(".,);"))
+        deduped = []
+        seen = set()
+        for u in keep:
+            if u not in seen:
+                seen.add(u)
+                deduped.append(u)
+        return deduped[:6]
+    except Exception:
+        return []
+
+
 def get_answer_impersonation(
     question: str,
     resume_context: str,
@@ -952,121 +1035,128 @@ with st.sidebar:
 # Main chat
 if collection.count() > 0:
     for h in st.session_state.history:
-        with st.chat_message("user", avatar="👤"):
-            st.write(h["q"])
-        with st.chat_message("assistant", avatar="🤖"):
-            st.write(h["a"])
+        if me_mode:
+            render_chat_bubble("user", h["q"])
+            render_chat_bubble("assistant", h["a"])
+        else:
+            with st.chat_message("user", avatar="👤"):
+                st.write(h["q"])
+            with st.chat_message("assistant", avatar="🤖"):
+                st.write(h["a"])
 
-    prompt_label = "Ask about the candidates..." if not me_mode else "Ask me anything (resume, web search about you, GitHub)..."
+    prompt_label = "Ask about the candidates..." if not me_mode else "Chat with the candidate (background, projects, GitHub)..."
     if question := st.chat_input(prompt_label):
-        with st.chat_message("user", avatar="👤"):
-            st.write(question)
+        if me_mode:
+            render_chat_bubble("user", question)
+        else:
+            with st.chat_message("user", avatar="👤"):
+                st.write(question)
 
-        with st.chat_message("assistant", avatar="🤖"):
-            if me_mode:
-                # Me mode: 3 tools = semantic search (resume), web search about person, GitHub
-                tool = select_tool(question)
-                candidate_name = resolve_person_from_question(question, candidates, selected)
-                resume_ctx = ""
-                web_search_data = ""
-                github_data = ""
+        if me_mode:
+            # Me mode: 3 tools = semantic search (resume), web search about person, GitHub
+            tool = select_tool(question)
+            candidate_name = resolve_person_from_question(question, candidates, selected)
+            resume_ctx = ""
+            web_search_data = ""
+            github_data = ""
 
-                if tool == "deny":
-                    if is_small_talk(question):
-                        answer = "Great to meet you. I can walk you through my background, skills, projects, GitHub, or current weather in a location."
-                    else:
-                        # In Me mode, default to resume context for recruiter-style chat instead of hard denying.
-                        use_full = me_mode and candidates and needs_full_resume(question)
-                        if use_full:
-                            resume_ctx = get_all_resume_chunks_for_candidate(
-                                selected if selected and selected != "All" else candidates[0]
-                            )
-                        else:
-                            rewritten = rewrite_query(question, st.session_state.history, candidates)
-                            resume_ctx, _ = search_resumes(rewritten, question, selected, candidates)
-                        answer = get_answer_impersonation(
-                            question,
-                            resume_context=resume_ctx,
-                            web_search_data="",
-                            github_data="",
-                            candidate_name=candidate_name,
-                            history=st.session_state.history,
-                        )
+            if tool == "deny":
+                if is_small_talk(question):
+                    answer = "Great to meet you. I can walk you through my background, experience, key projects, and GitHub work."
                 else:
-                    if tool == "resume":
-                        use_full = me_mode and candidates and needs_full_resume(question)
-                        if use_full:
-                            resume_ctx = get_all_resume_chunks_for_candidate(
-                                selected if selected and selected != "All" else candidates[0]
-                            )
-                        else:
-                            rewritten = rewrite_query(question, st.session_state.history, candidates)
-                            resume_ctx, _ = search_resumes(rewritten, question, selected, candidates)
-                    if tool == "web_search":
-                        is_weather = is_weather_query(question)
-                        web_search_data = tool_web_search(candidate_name, question, for_weather=is_weather)
-                    if tool == "github":
-                        github_username = st.session_state.get("github_username", "").strip() or infer_github_username_from_resume(candidate_name)
-                        github_data = tool_github(github_username)
-
-                    if tool == "web_search":
-                        if is_weather_query(question):
-                            answer = f"Weather:\n{web_search_data}"
-                        else:
-                            answer = f"Web results about {candidate_name}:\n{web_search_data}"
-                    elif tool == "github":
-                        answer = github_data
-                    else:
-                        answer = get_answer_impersonation(
-                            question,
-                            resume_context=resume_ctx,
-                            web_search_data=web_search_data,
-                            github_data=github_data,
-                            candidate_name=candidate_name,
-                            history=st.session_state.history,
+                    # In Me mode, default to resume context for recruiter-style chat instead of hard denying.
+                    use_full = me_mode and candidates and needs_full_resume(question)
+                    if use_full:
+                        resume_ctx = get_all_resume_chunks_for_candidate(
+                            selected if selected and selected != "All" else candidates[0]
                         )
-
-                with st.spinner("Thinking..."):
-                    pass  # already computed above
-
-                st.write(answer)
-                with st.expander("🔍 Debug (Me mode)"):
-                    st.text(f"Tool used: {tool}")
-            else:
-                with st.spinner("Searching..."):
-                    candidates_list = get_all_candidates()
-                    tool = select_tool(question)
-                    target_name = resolve_person_from_question(question, candidates_list, selected)
-
-                    if tool == "web_search":
-                        data = tool_web_search(target_name, question, for_weather=is_weather_query(question))
-                        if is_weather_query(question):
-                            answer = f"Weather:\n{data}"
-                        else:
-                            answer = f"Web results about {target_name}:\n{data}"
-                        rewritten = question
-                        meta = []
-                    elif tool == "github":
-                        gh_user = infer_github_username_from_resume(target_name)
-                        answer = tool_github(gh_user)
-                        rewritten = question
-                        meta = []
                     else:
-                        rewritten = rewrite_query(question, st.session_state.history, candidates_list)
-                        context, meta = search_resumes(rewritten, question, selected, candidates_list)
-                        answer = get_answer(question, context, st.session_state.history, candidates_list)
+                        rewritten = rewrite_query(question, st.session_state.history, candidates)
+                        resume_ctx, _ = search_resumes(rewritten, question, selected, candidates)
+                    answer = get_answer_impersonation(
+                        question,
+                        resume_context=resume_ctx,
+                        web_search_data="",
+                        github_data="",
+                        candidate_name=candidate_name,
+                        history=st.session_state.history,
+                    )
+            else:
+                if tool == "resume":
+                    use_full = me_mode and candidates and needs_full_resume(question)
+                    if use_full:
+                        resume_ctx = get_all_resume_chunks_for_candidate(
+                            selected if selected and selected != "All" else candidates[0]
+                        )
+                    else:
+                        rewritten = rewrite_query(question, st.session_state.history, candidates)
+                        resume_ctx, _ = search_resumes(rewritten, question, selected, candidates)
+                if tool == "web_search":
+                    is_weather = is_weather_query(question)
+                    web_search_data = tool_web_search(candidate_name, question, for_weather=is_weather)
+                if tool == "github":
+                    github_username = st.session_state.get("github_username", "").strip() or infer_github_username_from_resume(candidate_name)
+                    github_data = tool_github(github_username)
 
+                if tool == "web_search":
+                    if is_weather_query(question):
+                        answer = f"Weather:\n{web_search_data}"
+                    else:
+                        answer = f"Web results about {candidate_name}:\n{web_search_data}"
+                elif tool == "github":
+                    answer = github_data
+                else:
+                    answer = get_answer_impersonation(
+                        question,
+                        resume_context=resume_ctx,
+                        web_search_data=web_search_data,
+                        github_data=github_data,
+                        candidate_name=candidate_name,
+                        history=st.session_state.history,
+                    )
+
+            with st.spinner("Thinking..."):
+                pass  # already computed above
+
+            render_chat_bubble("assistant", answer)
+            with st.expander("🔍 Debug (Me mode)"):
+                st.text(f"Tool used: {tool}")
+        else:
+            with st.spinner("Searching..."):
+                candidates_list = get_all_candidates()
+                tool = select_tool(question)
+                target_name = resolve_person_from_question(question, candidates_list, selected)
+
+                if tool == "web_search":
+                    data = tool_web_search(target_name, question, for_weather=is_weather_query(question))
+                    if is_weather_query(question):
+                        answer = f"Weather:\n{data}"
+                    else:
+                        answer = f"Web results about {target_name}:\n{data}"
+                    rewritten = question
+                    meta = []
+                elif tool == "github":
+                    gh_user = infer_github_username_from_resume(target_name)
+                    answer = tool_github(gh_user)
+                    rewritten = question
+                    meta = []
+                else:
+                    rewritten = rewrite_query(question, st.session_state.history, candidates_list)
+                    context, meta = search_resumes(rewritten, question, selected, candidates_list)
+                    answer = get_answer(question, context, st.session_state.history, candidates_list)
+
+            with st.chat_message("assistant", avatar="🤖"):
                 st.write(answer)
-                with st.expander("🔍 Debug"):
-                    st.text(f"Original: {question}")
-                    st.text(f"Rewritten: {rewritten}")
-                    st.text(f"Tool used: {tool}")
-                    st.text(f"Chunks retrieved: {len(meta)}")
-                    if meta:
-                        sources = list(set(m.get("name", "?") for m in meta))
-                        st.text(f"Sources ({len(sources)}): {', '.join(sources[:15])}")
-                        if len(sources) > 15:
-                            st.text(f"... and {len(sources) - 15} more")
+            with st.expander("🔍 Debug"):
+                st.text(f"Original: {question}")
+                st.text(f"Rewritten: {rewritten}")
+                st.text(f"Tool used: {tool}")
+                st.text(f"Chunks retrieved: {len(meta)}")
+                if meta:
+                    sources = list(set(m.get("name", "?") for m in meta))
+                    st.text(f"Sources ({len(sources)}): {', '.join(sources[:15])}")
+                    if len(sources) > 15:
+                        st.text(f"... and {len(sources) - 15} more")
 
         st.session_state.history.append({"q": question, "a": answer})
         st.rerun()
