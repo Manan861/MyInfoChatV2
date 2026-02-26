@@ -482,14 +482,25 @@ def tool_web_search(candidate_name: str, question: str, for_weather: bool = Fals
                 f"wind {cur.get('wind_speed_10m')} km/h."
             )
 
-        # Person web search path
+        # Person web search path via Tavily
+        tavily_key = (os.getenv("TAVILY_API_KEY") or "").strip()
+        if not tavily_key:
+            return "Tavily API key is missing. Add TAVILY_API_KEY to your .env to enable web search."
+
+        from tavily import TavilyClient
+
         specific_terms = extract_search_focus(question, candidate_name)
-        query = f"\"{candidate_name}\" {specific_terms}".strip()
-        query_variants = [
-            query,
-            f"\"{candidate_name}\" linkedin",
-            f"\"{candidate_name}\" github",
-        ]
+        query = f"{candidate_name} {specific_terms}".strip()
+
+        client = TavilyClient(api_key=tavily_key)
+        search_data = client.search(
+            query=query,
+            search_depth="advanced",
+            max_results=8,
+            include_answer=False,
+            include_raw_content=False,
+        )
+
         lines = []
         seen = set()
 
@@ -500,69 +511,17 @@ def tool_web_search(candidate_name: str, question: str, for_weather: bool = Fals
                 seen.add(link)
                 lines.append(f"- Profile found in resume: {link}")
 
-        try:
-            from duckduckgo_search import DDGS
-            for qv in query_variants:
-                ddg_results = list(DDGS().text(qv[:220], max_results=5))
-                for r in ddg_results:
-                    title = (r.get("title") or "").strip()
-                    body = (r.get("body") or "").strip()
-                    href = (r.get("href") or "").strip()
-                    dedupe_key = href or f"{title}-{body[:80]}"
-                    if dedupe_key in seen:
-                        continue
-                    if title or body:
-                        seen.add(dedupe_key)
-                        lines.append(f"- {title}: {body[:220]} ({href})" if href else f"- {title}: {body[:220]}")
-                if len(lines) >= 8:
-                    break
-        except Exception:
-            pass
-
-        if len(lines) < 3:
-            # Fallback: scrape DDG html endpoint
-            try:
-                html_resp = requests.get(
-                    "https://duckduckgo.com/html/",
-                    params={"q": query},
-                    timeout=10,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                )
-                html_resp.raise_for_status()
-                for title, url in parse_ddg_html_results(html_resp.text, max_results=8):
-                    dedupe_key = url or title
-                    if dedupe_key in seen:
-                        continue
-                    seen.add(dedupe_key)
-                    lines.append(f"- {title} ({url})" if url else f"- {title}")
-                    if len(lines) >= 8:
-                        break
-            except Exception:
-                pass
-
-        if len(lines) < 3:
-            # Fallback: DuckDuckGo instant answer API
-            ia = requests.get(
-                "https://api.duckduckgo.com/",
-                params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
-                timeout=10,
-            )
-            ia.raise_for_status()
-            data = ia.json()
-            abstract = (data.get("AbstractText") or "").strip()
-            abstract_url = (data.get("AbstractURL") or "").strip()
-            heading = (data.get("Heading") or candidate_name).strip()
-            if abstract:
-                lines.append(f"- {heading}: {abstract[:300]} ({abstract_url})" if abstract_url else f"- {heading}: {abstract[:300]}")
-
-            for topic in (data.get("RelatedTopics") or [])[:5]:
-                if isinstance(topic, dict):
-                    text = (topic.get("Text") or "").strip()
-                    url = (topic.get("FirstURL") or "").strip()
-                    dedupe_key = url or text[:120]
-                    if text and dedupe_key not in seen:
-                        seen.add(dedupe_key)
-                        lines.append(f"- {text[:220]} ({url})" if url else f"- {text[:220]}")
+        for r in (search_data or {}).get("results", []):
+            title = (r.get("title") or "").strip()
+            url = (r.get("url") or "").strip()
+            content = (r.get("content") or "").strip()
+            dedupe_key = url or title
+            if dedupe_key in seen:
+                continue
+            if title or content:
+                seen.add(dedupe_key)
+                snippet = content[:220] if content else "No summary available."
+                lines.append(f"- {title or 'Result'}: {snippet} ({url})" if url else f"- {title or 'Result'}: {snippet}")
 
         return "\n".join(lines) if lines else "No web results found for this person."
     except Exception as e:
@@ -604,7 +563,15 @@ def tool_github(username: str) -> str:
         )
         repos_r.raise_for_status()
         repos = repos_r.json()
-        repo_lines = [f"- {repo.get('name', '')}: {repo.get('description') or 'No description'}" for repo in repos]
+        repo_lines = []
+        for repo in repos:
+            repo_name = repo.get("name", "")
+            repo_desc = repo.get("description") or "No description"
+            repo_url = repo.get("html_url") or ""
+            if repo_url:
+                repo_lines.append(f"- {repo_name}: {repo_url} ({repo_desc})")
+            else:
+                repo_lines.append(f"- {repo_name}: {repo_desc}")
         return f"GitHub: {name} (@{u}). Bio: {bio}. Public repos: {public_repos}.\nTop repos:\n" + "\n".join(repo_lines)
     except Exception as e:
         return f"GitHub lookup failed: {e}"
@@ -711,6 +678,14 @@ def is_small_talk(question: str) -> bool:
     return any(phrase in q for phrase in (
         "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
         "nice to meet you", "how are you",
+    ))
+
+
+def is_meeting_query(question: str) -> bool:
+    q = (question or "").strip().lower()
+    return any(phrase in q for phrase in (
+        "let's meet", "lets meet", "can we meet", "schedule", "set up a call",
+        "book time", "interview at", "meet at", "talk at", "connect at",
     ))
 
 
@@ -822,6 +797,30 @@ def extract_profile_links_from_resume(candidate_name: str) -> list[str]:
         return []
 
 
+def get_meeting_reply(question: str) -> str:
+    """Light conversational response for scheduling-style recruiter messages."""
+    try:
+        response = llm.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a job candidate replying to a recruiter. "
+                        "Reply in 1-2 short sentences. Confirm the meeting professionally "
+                        "if a time is proposed. If no concrete time is provided, ask for one."
+                    ),
+                },
+                {"role": "user", "content": question.strip()},
+            ],
+            temperature=0.2,
+            max_tokens=80,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception:
+        return "That sounds good. Please share the exact time and time zone, and I’ll confirm."
+
+
 def get_answer_impersonation(
     question: str,
     resume_context: str,
@@ -927,7 +926,12 @@ if "history" not in st.session_state:
 
 
 def render_chat_bubble(role: str, message: str) -> None:
-    safe = html.escape(message or "").replace("\n", "<br>")
+    safe = html.escape(message or "")
+    safe = re.sub(
+        r"(https?://[^\s<]+)",
+        r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>',
+        safe,
+    ).replace("\n", "<br>")
     tag = "Recruiter" if role == "user" else "Candidate"
     st.markdown(
         f"""
@@ -981,6 +985,15 @@ with st.sidebar:
         st.divider()
 
         selected = st.selectbox("🔍 Filter", ["All"] + candidates) if len(candidates) > 1 else "All"
+        if me_mode and candidates:
+            if "me_candidate" not in st.session_state or st.session_state.me_candidate not in candidates:
+                st.session_state.me_candidate = candidates[0]
+            st.session_state.me_candidate = st.selectbox(
+                "🙋 My Profile (Me mode)",
+                candidates,
+                index=candidates.index(st.session_state.me_candidate),
+                help="Me mode will only use this resume, even if many resumes are uploaded.",
+            )
 
         col1, col2 = st.columns(2)
         if col1.button("🗑️ Clear Data", use_container_width=True):
@@ -1054,25 +1067,25 @@ if collection.count() > 0:
 
         if me_mode:
             # Me mode: 3 tools = semantic search (resume), web search about person, GitHub
-            tool = select_tool(question)
-            candidate_name = resolve_person_from_question(question, candidates, selected)
+            tool = "meeting" if is_meeting_query(question) else select_tool(question)
+            candidate_name = st.session_state.get("me_candidate", candidates[0] if candidates else "The candidate")
             resume_ctx = ""
             web_search_data = ""
             github_data = ""
 
-            if tool == "deny":
+            if tool == "meeting":
+                answer = get_meeting_reply(question)
+            elif tool == "deny":
                 if is_small_talk(question):
                     answer = "Great to meet you. I can walk you through my background, experience, key projects, and GitHub work."
                 else:
                     # In Me mode, default to resume context for recruiter-style chat instead of hard denying.
-                    use_full = me_mode and candidates and needs_full_resume(question)
+                    use_full = bool(candidate_name and candidate_name != "The candidate") and needs_full_resume(question)
                     if use_full:
-                        resume_ctx = get_all_resume_chunks_for_candidate(
-                            selected if selected and selected != "All" else candidates[0]
-                        )
+                        resume_ctx = get_all_resume_chunks_for_candidate(candidate_name)
                     else:
-                        rewritten = rewrite_query(question, st.session_state.history, candidates)
-                        resume_ctx, _ = search_resumes(rewritten, question, selected, candidates)
+                        rewritten = rewrite_query(question, st.session_state.history, [candidate_name] if candidate_name else [])
+                        resume_ctx, _ = search_resumes(rewritten, question, candidate_name, None)
                     answer = get_answer_impersonation(
                         question,
                         resume_context=resume_ctx,
@@ -1083,14 +1096,12 @@ if collection.count() > 0:
                     )
             else:
                 if tool == "resume":
-                    use_full = me_mode and candidates and needs_full_resume(question)
+                    use_full = bool(candidate_name and candidate_name != "The candidate") and needs_full_resume(question)
                     if use_full:
-                        resume_ctx = get_all_resume_chunks_for_candidate(
-                            selected if selected and selected != "All" else candidates[0]
-                        )
+                        resume_ctx = get_all_resume_chunks_for_candidate(candidate_name)
                     else:
-                        rewritten = rewrite_query(question, st.session_state.history, candidates)
-                        resume_ctx, _ = search_resumes(rewritten, question, selected, candidates)
+                        rewritten = rewrite_query(question, st.session_state.history, [candidate_name] if candidate_name else [])
+                        resume_ctx, _ = search_resumes(rewritten, question, candidate_name, None)
                 if tool == "web_search":
                     is_weather = is_weather_query(question)
                     web_search_data = tool_web_search(candidate_name, question, for_weather=is_weather)
