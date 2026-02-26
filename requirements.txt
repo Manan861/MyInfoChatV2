@@ -1,5 +1,8 @@
 chromadb~=1.4.0
-streamlit~=1.52.2
+fastapi~=0.116.0
+uvicorn~=0.35.0
+python-multipart~=0.0.20
+Jinja2~=3.1.6
 PyPDF2~=3.0.1
 openai~=2.15.0
 python-dotenv~=1.2.1

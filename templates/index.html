@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Resume Recruiter Copilot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700&display=swap" rel="stylesheet" />
+
+  <script>
+    tailwind = window.tailwind || {};
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Sora', 'sans-serif'],
+            body: ['Manrope', 'sans-serif'],
+          },
+          colors: {
+            page: 'var(--page)',
+            panel: 'var(--panel)',
+            panelSoft: 'var(--panel-soft)',
+            stroke: 'var(--stroke)',
+            ink: 'var(--ink)',
+            muted: 'var(--muted)',
+            brand: 'var(--brand)',
+            brandDeep: 'var(--brand-deep)',
+            mint: 'var(--mint)',
+            warm: 'var(--warm)',
+          },
+          boxShadow: {
+            bloom: '0 24px 60px rgba(15, 32, 73, 0.12)',
+            card: '0 10px 30px rgba(15, 23, 42, 0.08)',
+          },
+        },
+      },
+    }
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <style>
+    :root {
+      --page: #f2f6ff;
+      --panel: #ffffff;
+      --panel-soft: #f7f9ff;
+      --stroke: #d9e2f2;
+      --ink: #0d1b3d;
+      --muted: #5d6b8a;
+      --brand: #2152ff;
+      --brand-deep: #112a84;
+      --mint: #08a88d;
+      --warm: #ff9f2f;
+    }
+
+    body {
+      font-family: 'Manrope', sans-serif;
+      background: radial-gradient(1200px 700px at -15% -20%, #d6e4ff 0%, transparent 55%),
+                  radial-gradient(900px 480px at 120% -10%, #e0fff8 0%, transparent 60%),
+                  var(--page);
+      color: var(--ink);
+    }
+
+    .chat-scroll::-webkit-scrollbar {
+      width: 9px;
+      height: 9px;
+    }
+
+    .chat-scroll::-webkit-scrollbar-thumb {
+      background: #c4d0ea;
+      border-radius: 999px;
+    }
+
+    .message-rise {
+      animation: message-rise 220ms ease-out;
+    }
+
+    @keyframes message-rise {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen text-ink">
+  <div id="root"></div>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel" src="/static/react_app.js"></script>
+</body>
+</html>

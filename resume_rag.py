@@ -5,15 +5,21 @@ Improvements: Scales to 40+ resumes, better specific question handling, improved
 
 import os
 import json
+import io
+import uuid
 import chromadb
-import streamlit as st
 from openai import OpenAI
 from dotenv import load_dotenv
 import PyPDF2
 import datetime
 import requests
 import re
-import html
+import uvicorn
+from fastapi import Body, FastAPI, File, Request as FastAPIRequest, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 load_dotenv()
 
@@ -490,19 +496,20 @@ def tool_web_search(candidate_name: str, question: str, for_weather: bool = Fals
         from tavily import TavilyClient
 
         specific_terms = extract_search_focus(question, candidate_name)
-        query = f"{candidate_name} {specific_terms}".strip()
+        base_query = f"{candidate_name} {specific_terms}".strip()
+        query_variants = [
+            base_query,
+            f"{candidate_name} profile",
+            f"{candidate_name} linkedin github",
+            f"{candidate_name} portfolio projects",
+        ]
+        query_variants = [q.strip() for q in query_variants if q and q.strip()]
 
         client = TavilyClient(api_key=tavily_key)
-        search_data = client.search(
-            query=query,
-            search_depth="advanced",
-            max_results=8,
-            include_answer=False,
-            include_raw_content=False,
-        )
 
         lines = []
         seen = set()
+        answers = []
 
         # Seed with profile links found in resume text (high-confidence identity anchors)
         profile_links = extract_profile_links_from_resume(candidate_name)
@@ -511,17 +518,42 @@ def tool_web_search(candidate_name: str, question: str, for_weather: bool = Fals
                 seen.add(link)
                 lines.append(f"- Profile found in resume: {link}")
 
-        for r in (search_data or {}).get("results", []):
-            title = (r.get("title") or "").strip()
-            url = (r.get("url") or "").strip()
-            content = (r.get("content") or "").strip()
-            dedupe_key = url or title
-            if dedupe_key in seen:
+        for q in query_variants:
+            try:
+                search_data = client.search(
+                    query=q,
+                    search_depth="advanced",
+                    max_results=6,
+                    include_answer=True,
+                    include_raw_content=False,
+                )
+            except Exception:
                 continue
-            if title or content:
-                seen.add(dedupe_key)
-                snippet = content[:220] if content else "No summary available."
-                lines.append(f"- {title or 'Result'}: {snippet} ({url})" if url else f"- {title or 'Result'}: {snippet}")
+
+            answer = (search_data or {}).get("answer") or ""
+            answer = answer.strip()
+            if answer and answer not in answers:
+                answers.append(answer)
+
+            for r in (search_data or {}).get("results", []):
+                title = (r.get("title") or "").strip()
+                url = (r.get("url") or "").strip()
+                content = (r.get("content") or "").strip()
+                dedupe_key = url or title
+                if dedupe_key in seen:
+                    continue
+                if title or content:
+                    seen.add(dedupe_key)
+                    snippet = content[:220] if content else "No summary available."
+                    lines.append(f"- {title or 'Result'}: {snippet} ({url})" if url else f"- {title or 'Result'}: {snippet}")
+                if len(lines) >= 12:
+                    break
+            if len(lines) >= 12:
+                break
+
+        if answers:
+            summary_lines = [f"- Tavily summary: {a[:260]}" for a in answers[:2]]
+            lines = summary_lines + lines
 
         return "\n".join(lines) if lines else "No web results found for this person."
     except Exception as e:
@@ -543,12 +575,82 @@ def parse_ddg_html_results(page_html: str, max_results: int = 8) -> list[tuple[s
     return out
 
 
-def tool_github(username: str) -> str:
+def normalize_github_username(value: str) -> str:
+    """Normalize GitHub username from plain handle, @handle, or URL."""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    raw = raw.strip("()[]{}<>.,;:!?'\"")
+    if raw.startswith("@"):
+        raw = raw[1:]
+    m = re.search(r"github\.com/([A-Za-z0-9-]{1,39})", raw, flags=re.IGNORECASE)
+    if m:
+        raw = m.group(1)
+    if "/" in raw:
+        raw = raw.split("/", 1)[0]
+    raw = re.sub(r"[^A-Za-z0-9-]", "", raw)
+    return raw[:39]
+
+
+def infer_github_username_from_web(candidate_name: str) -> str:
+    """Fallback GitHub username inference using Tavily person search."""
+    if not candidate_name or candidate_name == "The candidate":
+        return ""
+    tavily_key = (os.getenv("TAVILY_API_KEY") or "").strip()
+    if not tavily_key:
+        return ""
+    try:
+        from tavily import TavilyClient
+
+        client = TavilyClient(api_key=tavily_key)
+        queries = [
+            f"{candidate_name} github",
+            f"{candidate_name} github profile",
+            f"{candidate_name} github.com",
+        ]
+        bad = {"features", "topics", "orgs", "organizations", "settings", "marketplace", "apps", "events", "users"}
+
+        for q in queries:
+            search_data = client.search(
+                query=q,
+                search_depth="advanced",
+                max_results=6,
+                include_answer=True,
+                include_raw_content=False,
+            )
+            answer = (search_data or {}).get("answer") or ""
+            answer_match = re.search(r"github\.com/([A-Za-z0-9-]{1,39})", answer, flags=re.IGNORECASE)
+            if answer_match:
+                candidate = normalize_github_username(answer_match.group(1))
+                if candidate and candidate.lower() not in bad:
+                    return candidate
+
+            for r in (search_data or {}).get("results", []):
+                url = (r.get("url") or "").strip()
+                content = (r.get("content") or "").strip()
+                blob = f"{url}\n{content}"
+                m = re.search(r"github\.com/([A-Za-z0-9-]{1,39})", blob, flags=re.IGNORECASE)
+                if m:
+                    candidate = normalize_github_username(m.group(1))
+                    if candidate and candidate.lower() not in bad:
+                        return candidate
+        return ""
+    except Exception:
+        return ""
+
+
+def tool_github(username: str, mode: str = "me", candidate_name: str = "") -> str:
     """Fetch GitHub profile and top repos for the given username."""
-    if not (username or "").strip():
+    u = normalize_github_username(username)
+    if not u:
+        if mode == "recruiter":
+            label = candidate_name or "this candidate"
+            return (
+                f"I couldn't find a GitHub username for {label} from resume/web signals. "
+                "Ask for an explicit GitHub handle or add a GitHub link in the resume."
+            )
         return "No GitHub username set. Add your GitHub username in the sidebar (Me mode)."
     try:
-        u = (username or "").strip()
         r = requests.get(f"https://api.github.com/users/{u}", timeout=10)
         if r.status_code == 404:
             return f"GitHub user '{u}' not found."
@@ -557,22 +659,43 @@ def tool_github(username: str) -> str:
         bio = profile.get("bio") or ""
         name = profile.get("name") or u
         public_repos = profile.get("public_repos", 0)
+        followers = profile.get("followers", 0)
+        following = profile.get("following", 0)
+        company = profile.get("company") or ""
+        location = profile.get("location") or ""
+        blog = profile.get("blog") or ""
         repos_r = requests.get(
             f"https://api.github.com/users/{u}/repos?sort=updated&per_page=8",
             timeout=10,
         )
         repos_r.raise_for_status()
         repos = repos_r.json()
+        repos = sorted(repos, key=lambda x: (x.get("stargazers_count") or 0), reverse=True)[:8]
         repo_lines = []
         for repo in repos:
             repo_name = repo.get("name", "")
             repo_desc = repo.get("description") or "No description"
             repo_url = repo.get("html_url") or ""
+            stars = repo.get("stargazers_count", 0)
+            forks = repo.get("forks_count", 0)
+            lang = repo.get("language") or "n/a"
             if repo_url:
-                repo_lines.append(f"- {repo_name}: {repo_url} ({repo_desc})")
+                repo_lines.append(f"- {repo_name} [{lang}, ★{stars}, forks {forks}]: {repo_url} ({repo_desc})")
             else:
-                repo_lines.append(f"- {repo_name}: {repo_desc}")
-        return f"GitHub: {name} (@{u}). Bio: {bio}. Public repos: {public_repos}.\nTop repos:\n" + "\n".join(repo_lines)
+                repo_lines.append(f"- {repo_name} [{lang}, ★{stars}, forks {forks}]: {repo_desc}")
+        details = []
+        if company:
+            details.append(f"Company: {company}")
+        if location:
+            details.append(f"Location: {location}")
+        if blog:
+            details.append(f"Website: {blog}")
+        details_text = (" " + " | ".join(details)) if details else ""
+        return (
+            f"GitHub: {name} (@{u}). Bio: {bio}. Public repos: {public_repos}. "
+            f"Followers: {followers}, Following: {following}.{details_text}\nTop repos:\n"
+            + "\n".join(repo_lines)
+        )
     except Exception as e:
         return f"GitHub lookup failed: {e}"
 
@@ -689,16 +812,40 @@ def is_meeting_query(question: str) -> bool:
     ))
 
 
-def resolve_person_from_question(question: str, candidates: list, selected: str = None) -> str:
-    """Resolve target candidate by explicit mention, then selected filter, then first candidate."""
+def resolve_person_from_question(question: str, candidates: list, selected: str = None, history: list | None = None) -> str:
+    """Resolve target candidate by mention, selection, conversation history, then first candidate."""
     if not candidates:
         return "The candidate"
     q = (question or "").lower()
+    q_norm = re.sub(r"[^a-z0-9\s]", " ", q)
+
+    # Direct full-name mention
     for name in sorted(candidates, key=len, reverse=True):
         if name and name.lower() in q:
             return name
+
+    # First-name / possessive mention (e.g., "manans github")
+    for name in candidates:
+        parts = [p for p in re.split(r"\s+", name.lower().strip()) if p]
+        if not parts:
+            continue
+        first = re.sub(r"[^a-z0-9]", "", parts[0])
+        if len(first) >= 3:
+            if re.search(rf"\b{re.escape(first)}\b", q_norm) or re.search(rf"\b{re.escape(first)}s\b", q_norm):
+                return name
+
     if selected and selected != "All" and selected in candidates:
         return selected
+
+    # Pronoun follow-up fallback to most recently referenced candidate in recruiter history
+    if history:
+        recent = history[-6:]
+        for h in reversed(recent):
+            combined = f"{h.get('q', '')} {h.get('a', '')}".lower()
+            for name in sorted(candidates, key=len, reverse=True):
+                if name.lower() in combined:
+                    return name
+
     return candidates[0]
 
 
@@ -877,310 +1024,246 @@ STRICT RULES – NO HALLUCINATION:
     return response.choices[0].message.content
 
 
-# ============== STREAMLIT APP ==============
+app = FastAPI(title="Resume RAG API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
 
-st.set_page_config(page_title="Resume RAG", page_icon="📄", layout="wide")
+APP_STATE = {
+    "history": {"recruiter": [], "me": []},
+    "me_candidate": "",
+    "github_username": "",
+}
 
-st.markdown("""
-<style>
-    .stApp { max-width: 1200px; margin: 0 auto; }
-    .main-header { text-align: center; padding: 1rem 0; border-bottom: 2px solid #4A90A4; margin-bottom: 2rem; }
-    .chat-row { display: flex; margin: 0.55rem 0; }
-    .chat-row.user { justify-content: flex-end; }
-    .chat-row.assistant { justify-content: flex-start; }
-    .chat-bubble {
-        max-width: 78%;
-        padding: 0.85rem 1rem;
-        border-radius: 14px;
-        line-height: 1.45;
-        font-size: 1.02rem;
-        border: 1px solid rgba(255,255,255,0.09);
-        box-shadow: 0 4px 18px rgba(0,0,0,0.2);
-        white-space: normal;
-        word-wrap: break-word;
+
+def ensure_me_candidate(candidates: list[str]) -> str:
+    """Keep selected Me profile valid and default to first candidate."""
+    if not candidates:
+        APP_STATE["me_candidate"] = ""
+        return ""
+    current = APP_STATE.get("me_candidate", "")
+    if current not in candidates:
+        APP_STATE["me_candidate"] = candidates[0]
+    return APP_STATE["me_candidate"]
+
+
+def snapshot(mode: str = "recruiter") -> dict:
+    """Return current UI state payload for frontend."""
+    candidates = get_all_candidates()
+    me_candidate = ensure_me_candidate(candidates)
+    return {
+        "mode": mode,
+        "candidates": candidates,
+        "resume_count": get_resume_count(),
+        "chunk_count": collection.count(),
+        "history": APP_STATE["history"].get(mode, []),
+        "me_candidate": me_candidate,
+        "github_username": APP_STATE.get("github_username", ""),
     }
-    .chat-row.user .chat-bubble {
-        background: linear-gradient(135deg, #2f3d63, #445a9c);
-        color: #f7f9ff;
-    }
-    .chat-row.assistant .chat-bubble {
-        background: rgba(255,255,255,0.05);
-        color: #f4f6ff;
-    }
-    .chat-tag {
-        font-size: 0.72rem;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        opacity: 0.8;
-        text-transform: uppercase;
-        margin-bottom: 0.25rem;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.title("📄 Resume RAG System")
-st.caption("Ask questions about uploaded resumes using AI-powered search")
-
-if "history" not in st.session_state:
-    st.session_state.history = []
 
 
-def render_chat_bubble(role: str, message: str) -> None:
-    safe = html.escape(message or "")
-    safe = re.sub(
-        r"(https?://[^\s<]+)",
-        r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>',
-        safe,
-    ).replace("\n", "<br>")
-    tag = "Recruiter" if role == "user" else "Candidate"
-    st.markdown(
-        f"""
-        <div class="chat-row {role}">
-            <div class="chat-bubble">
-                <div class="chat-tag">{tag}</div>
-                <div>{safe}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+@app.get("/")
+def index(request: FastAPIRequest):
+    return templates.TemplateResponse("index.html", {"request": request})
 
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ Settings")
 
-    app_mode = st.radio(
-        "Mode",
-        ["Recruiter (browse candidates)", "Me (recruiter talks to me)"],
-        index=0,
-        help="Recruiter: multi-candidate Q&A. Me: you as candidate, 3 tools (semantic search, web search about you, GitHub).",
-    )
-    me_mode = "Me" in app_mode
+@app.get("/api/state")
+def api_state(mode: str = "recruiter"):
+    mode = (mode or "recruiter").strip().lower()
+    mode = "me" if mode == "me" else "recruiter"
+    return snapshot(mode)
 
-    if me_mode:
-        if "github_username" not in st.session_state:
-            st.session_state.github_username = ""
-        st.session_state.github_username = st.text_input(
-            "GitHub username (for Me mode)",
-            value=st.session_state.github_username,
-            placeholder="e.g. octocat",
-            help="Your GitHub handle so the bot can fetch your profile and repos.",
-        )
+
+@app.post("/api/clear-chat")
+def api_clear_chat(payload: dict | None = Body(default=None)):
+    payload = payload or {}
+    mode = (payload.get("mode") or "recruiter").strip().lower()
+    if mode in APP_STATE["history"]:
+        APP_STATE["history"][mode] = []
+    else:
+        APP_STATE["history"] = {"recruiter": [], "me": []}
+    return {"ok": True, "state": snapshot(mode if mode in ("me", "recruiter") else "recruiter")}
+
+
+@app.post("/api/clear-data")
+def api_clear_data():
+    global collection
+    try:
+        vec_db.delete_collection("resumes")
+    except Exception:
+        pass
+    collection = vec_db.get_or_create_collection("resumes")
+    APP_STATE["history"] = {"recruiter": [], "me": []}
+    APP_STATE["me_candidate"] = ""
+    return {"ok": True, "state": snapshot("recruiter")}
+
+
+@app.post("/api/upload")
+async def api_upload(files: list[UploadFile] | None = File(default=None)):
+    if not files:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "No files uploaded."})
+
+    processed = []
+    skipped = []
+
+    for f in files:
+        filename = (f.filename or "").strip()
+        if not filename or not filename.lower().endswith(".pdf"):
+            skipped.append({"file": filename or "unknown", "reason": "Only PDF files are supported."})
+            continue
+        try:
+            raw = await f.read()
+            if not raw:
+                skipped.append({"file": filename, "reason": "Empty file."})
+                continue
+
+            pdf = PyPDF2.PdfReader(io.BytesIO(raw))
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            if not text.strip():
+                skipped.append({"file": filename, "reason": "No extractable text found."})
+                continue
+
+            valid, _reason = is_resume(text)
+            if not valid:
+                skipped.append({"file": filename, "reason": "Document is not a resume."})
+                continue
+
+            meta = extract_metadata(text, filename)
+            chunks = chunk_text(text)
+            if not chunks:
+                skipped.append({"file": filename, "reason": "No chunks generated."})
+                continue
+
+            ids = [f"{filename}_{i}_{uuid.uuid4().hex}" for i, _ in enumerate(chunks)]
+            metadatas = [{"name": meta["name"], "filename": filename} for _ in chunks]
+            collection.add(documents=chunks, ids=ids, metadatas=metadatas)
+            processed.append({"file": filename, "candidate": meta["name"], "chunks": len(chunks)})
+        except Exception as e:
+            skipped.append({"file": filename, "reason": str(e)})
 
     candidates = get_all_candidates()
-    resume_count = get_resume_count()
-    chunk_count = collection.count()
+    ensure_me_candidate(candidates)
+    return {
+        "ok": True,
+        "processed": processed,
+        "skipped": skipped,
+        "state": snapshot("recruiter"),
+    }
 
-    if chunk_count > 0:
-        st.markdown("### 📊 Stats")
-        col1, col2 = st.columns(2)
-        col1.metric("Resumes", resume_count)
-        col2.metric("Chunks", chunk_count)
 
-        st.markdown("### 👥 Candidates")
-        with st.container(height=250):
-            for name in candidates:
-                st.markdown(f"• {name}")
+@app.post("/api/chat")
+def api_chat(payload: dict | None = Body(default=None)):
+    payload = payload or {}
+    question = (payload.get("message") or "").strip()
+    if not question:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Message cannot be empty."})
 
-        st.divider()
+    mode = (payload.get("mode") or "recruiter").strip().lower()
+    mode = "me" if mode == "me" else "recruiter"
 
-        selected = st.selectbox("🔍 Filter", ["All"] + candidates) if len(candidates) > 1 else "All"
-        if me_mode and candidates:
-            if "me_candidate" not in st.session_state or st.session_state.me_candidate not in candidates:
-                st.session_state.me_candidate = candidates[0]
-            st.session_state.me_candidate = st.selectbox(
-                "🙋 My Profile (Me mode)",
-                candidates,
-                index=candidates.index(st.session_state.me_candidate),
-                help="Me mode will only use this resume, even if many resumes are uploaded.",
-            )
+    selected = (payload.get("selected") or "All").strip()
+    incoming_me_candidate = (payload.get("me_candidate") or "").strip()
+    incoming_github = (payload.get("github_username") or "").strip()
 
-        col1, col2 = st.columns(2)
-        if col1.button("🗑️ Clear Data", use_container_width=True):
-            vec_db.delete_collection("resumes")
-            st.session_state.history = []
-            st.rerun()
-        if col2.button("💬 Clear Chat", use_container_width=True):
-            st.session_state.history = []
-            st.rerun()
-    else:
-        st.info("No resumes uploaded")
-        selected = "All"
+    if incoming_github:
+        APP_STATE["github_username"] = incoming_github
 
-    st.divider()
-    st.markdown("### 📤 Upload")
-    files = st.file_uploader("PDFs", type=['pdf'], accept_multiple_files=True, label_visibility="collapsed")
+    candidates = get_all_candidates()
+    ensure_me_candidate(candidates)
 
-    if files and st.button("⬆️ Process", use_container_width=True):
-        progress = st.progress(0)
+    if incoming_me_candidate and incoming_me_candidate in candidates:
+        APP_STATE["me_candidate"] = incoming_me_candidate
 
-        for idx, f in enumerate(files):
-            try:
-                pdf = PyPDF2.PdfReader(f)
-                text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    if mode == "me":
+        candidate_name = APP_STATE.get("me_candidate") or (candidates[0] if candidates else "The candidate")
+        tool = "meeting" if is_meeting_query(question) else select_tool(question)
+        resume_ctx = ""
+        web_search_data = ""
+        github_data = ""
 
-                if not text.strip():
-                    st.warning(f"⚠️ {f.name}: Empty")
-                    continue
-
-                is_valid, reason = is_resume(text)
-                if not is_valid:
-                    st.warning(f"⚠️ {f.name}: Not a resume")
-                    continue
-
-                meta = extract_metadata(text, f.name)
-                chunks = chunk_text(text)
-
-                if chunks:
-                    collection.add(
-                        documents=chunks,
-                        ids=[f"{f.name}_{i}_{hash(c)}" for i, c in enumerate(chunks)],
-                        metadatas=[{"name": meta["name"], "filename": f.name} for _ in chunks]
-                    )
-                    st.success(f"✓ {meta['name']}")
-            except Exception as e:
-                st.error(f"❌ {f.name}: {e}")
-
-            progress.progress((idx + 1) / len(files))
-
-        st.rerun()
-
-# Main chat
-if collection.count() > 0:
-    for h in st.session_state.history:
-        if me_mode:
-            render_chat_bubble("user", h["q"])
-            render_chat_bubble("assistant", h["a"])
-        else:
-            with st.chat_message("user", avatar="👤"):
-                st.write(h["q"])
-            with st.chat_message("assistant", avatar="🤖"):
-                st.write(h["a"])
-
-    prompt_label = "Ask about the candidates..." if not me_mode else "Chat with the candidate (background, projects, GitHub)..."
-    if question := st.chat_input(prompt_label):
-        if me_mode:
-            render_chat_bubble("user", question)
-        else:
-            with st.chat_message("user", avatar="👤"):
-                st.write(question)
-
-        if me_mode:
-            # Me mode: 3 tools = semantic search (resume), web search about person, GitHub
-            tool = "meeting" if is_meeting_query(question) else select_tool(question)
-            candidate_name = st.session_state.get("me_candidate", candidates[0] if candidates else "The candidate")
-            resume_ctx = ""
-            web_search_data = ""
-            github_data = ""
-
-            if tool == "meeting":
-                answer = get_meeting_reply(question)
-            elif tool == "deny":
-                if is_small_talk(question):
-                    answer = "Great to meet you. I can walk you through my background, experience, key projects, and GitHub work."
-                else:
-                    # In Me mode, default to resume context for recruiter-style chat instead of hard denying.
-                    use_full = bool(candidate_name and candidate_name != "The candidate") and needs_full_resume(question)
-                    if use_full:
-                        resume_ctx = get_all_resume_chunks_for_candidate(candidate_name)
-                    else:
-                        rewritten = rewrite_query(question, st.session_state.history, [candidate_name] if candidate_name else [])
-                        resume_ctx, _ = search_resumes(rewritten, question, candidate_name, None)
-                    answer = get_answer_impersonation(
-                        question,
-                        resume_context=resume_ctx,
-                        web_search_data="",
-                        github_data="",
-                        candidate_name=candidate_name,
-                        history=st.session_state.history,
-                    )
+        if tool == "meeting":
+            answer = get_meeting_reply(question)
+        elif tool == "deny":
+            if is_small_talk(question):
+                answer = "Great to meet you. I can walk you through my background, experience, key projects, and GitHub work."
             else:
-                if tool == "resume":
-                    use_full = bool(candidate_name and candidate_name != "The candidate") and needs_full_resume(question)
-                    if use_full:
-                        resume_ctx = get_all_resume_chunks_for_candidate(candidate_name)
-                    else:
-                        rewritten = rewrite_query(question, st.session_state.history, [candidate_name] if candidate_name else [])
-                        resume_ctx, _ = search_resumes(rewritten, question, candidate_name, None)
-                if tool == "web_search":
-                    is_weather = is_weather_query(question)
-                    web_search_data = tool_web_search(candidate_name, question, for_weather=is_weather)
-                if tool == "github":
-                    github_username = st.session_state.get("github_username", "").strip() or infer_github_username_from_resume(candidate_name)
-                    github_data = tool_github(github_username)
-
-                if tool == "web_search":
-                    if is_weather_query(question):
-                        answer = f"Weather:\n{web_search_data}"
-                    else:
-                        answer = f"Web results about {candidate_name}:\n{web_search_data}"
-                elif tool == "github":
-                    answer = github_data
+                use_full = bool(candidate_name and candidate_name != "The candidate") and needs_full_resume(question)
+                if use_full:
+                    resume_ctx = get_all_resume_chunks_for_candidate(candidate_name)
                 else:
-                    answer = get_answer_impersonation(
-                        question,
-                        resume_context=resume_ctx,
-                        web_search_data=web_search_data,
-                        github_data=github_data,
-                        candidate_name=candidate_name,
-                        history=st.session_state.history,
-                    )
-
-            with st.spinner("Thinking..."):
-                pass  # already computed above
-
-            render_chat_bubble("assistant", answer)
-            with st.expander("🔍 Debug (Me mode)"):
-                st.text(f"Tool used: {tool}")
+                    rewritten = rewrite_query(question, APP_STATE["history"]["me"], [candidate_name] if candidate_name else [])
+                    resume_ctx, _ = search_resumes(rewritten, question, candidate_name, None)
+                answer = get_answer_impersonation(
+                    question,
+                    resume_context=resume_ctx,
+                    web_search_data="",
+                    github_data="",
+                    candidate_name=candidate_name,
+                    history=APP_STATE["history"]["me"],
+                )
         else:
-            with st.spinner("Searching..."):
-                candidates_list = get_all_candidates()
-                tool = select_tool(question)
-                target_name = resolve_person_from_question(question, candidates_list, selected)
-
-                if tool == "web_search":
-                    data = tool_web_search(target_name, question, for_weather=is_weather_query(question))
-                    if is_weather_query(question):
-                        answer = f"Weather:\n{data}"
-                    else:
-                        answer = f"Web results about {target_name}:\n{data}"
-                    rewritten = question
-                    meta = []
-                elif tool == "github":
-                    gh_user = infer_github_username_from_resume(target_name)
-                    answer = tool_github(gh_user)
-                    rewritten = question
-                    meta = []
+            if tool == "resume":
+                use_full = bool(candidate_name and candidate_name != "The candidate") and needs_full_resume(question)
+                if use_full:
+                    resume_ctx = get_all_resume_chunks_for_candidate(candidate_name)
                 else:
-                    rewritten = rewrite_query(question, st.session_state.history, candidates_list)
-                    context, meta = search_resumes(rewritten, question, selected, candidates_list)
-                    answer = get_answer(question, context, st.session_state.history, candidates_list)
+                    rewritten = rewrite_query(question, APP_STATE["history"]["me"], [candidate_name] if candidate_name else [])
+                    resume_ctx, _ = search_resumes(rewritten, question, candidate_name, None)
+            if tool == "web_search":
+                web_search_data = tool_web_search(candidate_name, question, for_weather=is_weather_query(question))
+            if tool == "github":
+                github_username = (
+                    APP_STATE.get("github_username", "").strip()
+                    or infer_github_username_from_resume(candidate_name)
+                    or infer_github_username_from_web(candidate_name)
+                )
+                github_data = tool_github(github_username, mode="me", candidate_name=candidate_name)
 
-            with st.chat_message("assistant", avatar="🤖"):
-                st.write(answer)
-            with st.expander("🔍 Debug"):
-                st.text(f"Original: {question}")
-                st.text(f"Rewritten: {rewritten}")
-                st.text(f"Tool used: {tool}")
-                st.text(f"Chunks retrieved: {len(meta)}")
-                if meta:
-                    sources = list(set(m.get("name", "?") for m in meta))
-                    st.text(f"Sources ({len(sources)}): {', '.join(sources[:15])}")
-                    if len(sources) > 15:
-                        st.text(f"... and {len(sources) - 15} more")
+            if tool == "web_search":
+                answer = f"Weather:\n{web_search_data}" if is_weather_query(question) else f"Web results about {candidate_name}:\n{web_search_data}"
+            elif tool == "github":
+                answer = github_data
+            else:
+                answer = get_answer_impersonation(
+                    question,
+                    resume_context=resume_ctx,
+                    web_search_data=web_search_data,
+                    github_data=github_data,
+                    candidate_name=candidate_name,
+                    history=APP_STATE["history"]["me"],
+                )
 
-        st.session_state.history.append({"q": question, "a": answer})
-        st.rerun()
-else:
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; padding: 2rem; background: #1a1a2e; border-radius: 15px; border: 1px solid #4A90A4; max-width: 600px; margin: auto;">
-        <h2 style="color: #4A90A4;">👋 Welcome!</h2>
-        <p style="color: #fff;">Upload resume PDFs in the sidebar to get started.</p>
-        <p style="color: #aaa;">Example questions:</p>
-        <p style="color: #fff;">📋 "Whose resumes do you have?"</p>
-        <p style="color: #fff;">🔍 "Who has Python experience?"</p>
-        <p style="color: #fff;">📅 "What was John doing in Jan 2025?"</p>
-        <p style="color: #fff;">📊 "Compare candidates for backend role"</p>
-    </div>
-    """, unsafe_allow_html=True)
+        APP_STATE["history"]["me"].append({"q": question, "a": answer})
+    else:
+        tool = select_tool(question)
+        target_name = resolve_person_from_question(
+            question,
+            candidates,
+            selected,
+            APP_STATE["history"]["recruiter"],
+        )
+
+        if tool == "web_search":
+            data = tool_web_search(target_name, question, for_weather=is_weather_query(question))
+            answer = f"Weather:\n{data}" if is_weather_query(question) else f"Web results about {target_name}:\n{data}"
+        elif tool == "github":
+            gh_user = infer_github_username_from_resume(target_name) or infer_github_username_from_web(target_name)
+            answer = tool_github(gh_user, mode="recruiter", candidate_name=target_name)
+        else:
+            rewritten = rewrite_query(question, APP_STATE["history"]["recruiter"], candidates)
+            context, _meta = search_resumes(rewritten, question, selected, candidates)
+            answer = get_answer(question, context, APP_STATE["history"]["recruiter"], candidates)
+
+        APP_STATE["history"]["recruiter"].append({"q": question, "a": answer})
+
+    return {"ok": True, "answer": answer, "tool": tool, "state": snapshot(mode)}
+
+
+if __name__ == "__main__":
+    uvicorn.run("resume_rag:app", host="0.0.0.0", port=int(os.getenv("PORT", "5050")), reload=True)

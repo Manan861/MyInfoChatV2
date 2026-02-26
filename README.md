@@ -3,9 +3,9 @@
 An AI-powered resume chatbot that lets you upload resumes and ask natural language questions about candidates.
 
 
-## 🚀 Live Demo
+## 🚀 Local App
 
-**Deployment Link:** https://myinfochatv2-5lvauqdcvetmehkidybeic.streamlit.app/
+Run locally at `http://localhost:5050`.
 
 ---
 
@@ -34,7 +34,8 @@ An AI-powered resume chatbot that lets you upload resumes and ask natural langua
 
 | Component | Technology |
 |-----------|------------|
-| **Frontend** | Streamlit |
+| **Frontend** | React + Tailwind CSS |
+| **Backend** | FastAPI |
 | **LLM** | OpenAI GPT-4o |
 | **Vector Database** | ChromaDB |
 | **PDF Processing** | PyPDF2 |
@@ -87,37 +88,30 @@ pip install -r requirements.txt
 4. **Set up environment variables**
 ```bash
 # Create .env file
-echo "OPENAI_API_KEY=your_api_key_here" > .env
+cat > .env <<EOF
+OPENAI_API_KEY=your_api_key_here
+TAVILY_API_KEY=your_tavily_api_key_here
+EOF
 ```
 
 5. **Run the application**
 ```bash
-streamlit run app.py
+python3 resume_rag.py
 ```
 
-The app will open at localhost
+The app will open at `http://localhost:5050`
 
 ---
-
-## 🚀 Deployment
-
-### Streamlit Cloud (Recommended)
-
-1. Push your code to GitHub
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Connect your GitHub repo
-4. Add your `OPENAI_API_KEY` in Streamlit secrets:
-   - Go to App Settings → Secrets
-   - Add: `OPENAI_API_KEY = "your_key_here"`
-5. Deploy!
-
-
 
 ## 📁 Project Structure
 
 ```
 resume-rag/
-├── app.py              # Main application
+├── resume_rag.py       # FastAPI backend + chat logic
+├── templates/
+│   └── index.html      # Tailwind + React shell
+├── static/
+│   └── react_app.js    # React UI logic
 ├── requirements.txt    # Python dependencies
 ├── .env               # Environment variables (not in repo)
 ├── .gitignore         # Git ignore file
@@ -148,4 +142,3 @@ resume-rag/
 
 ### Search Results
 ![Search](Images/Search.png)
-
