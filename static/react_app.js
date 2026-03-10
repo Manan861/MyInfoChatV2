@@ -114,19 +114,11 @@ function MessageBubble({ mode, role, text }) {
         border: "1px solid rgba(37, 99, 235, 0.35)",
         boxShadow: "0 4px 14px rgba(37, 99, 235, 0.25)",
       }
-    : mode === "me"
-      ? {
-          background: "#ffffff",
-          color: "#0f172a",
-          border: "1px solid rgba(5, 150, 105, 0.3)",
-          boxShadow: "0 4px 14px rgba(5, 150, 105, 0.08)",
-        }
-      : {
-          background: "#ffffff",
-          color: "#0f172a",
-          border: "1px solid #c8d4e8",
-          boxShadow: "0 4px 14px rgba(15, 23, 42, 0.06)",
-        };
+    : {
+        color: "#0f172a",
+        boxShadow: "0 4px 14px rgba(15, 23, 42, 0.08)",
+      };
+  const bubbleClass = !isUser ? (mode === "me" ? "bubble-assistant me-mode" : "bubble-assistant") : "";
 
   async function copyToClipboard() {
     try {
@@ -146,7 +138,7 @@ function MessageBubble({ mode, role, text }) {
           padding: "14px 18px",
           ...bubbleStyle,
         }}
-        className="group relative"
+        className={`group relative ${bubbleClass}`}
       >
         <div className="flex items-center justify-between gap-2 mb-1">
           <p
@@ -186,12 +178,13 @@ function MessageBubble({ mode, role, text }) {
 function TypingBubble({ mode }) {
   const label = mode === "me" ? "Candidate" : "Assistant";
   const style = mode === "me"
-    ? { background: "#ffffff", border: "1px solid rgba(8, 168, 141, 0.35)" }
-    : { background: "#ffffff", border: "1px solid #d9e2f2" };
+    ? { border: "1px solid rgba(5, 150, 105, 0.35)" }
+    : { border: "1px solid #c4b5fd" };
   return (
     <div className="message-rise flex gap-3 justify-start" aria-live="polite" aria-busy="true">
       <Avatar role="assistant" />
       <div
+        className={mode === "me" ? "bubble-assistant me-mode" : "bubble-assistant"}
         style={{
           maxWidth: "86%",
           borderRadius: 16,
@@ -535,19 +528,19 @@ function App() {
 
   const sidebarContent = (
     <>
-      <section className="card-panel p-5">
+      <section className="card-panel panel-intake p-5">
         <div className="flex items-center justify-between mb-4">
           <p className="font-display text-lg font-semibold text-ink">Resume Intake</p>
-          <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-blue-700">Step 1</span>
+          <span className="rounded-full bg-blue-200 text-blue-800 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider">Step 1</span>
         </div>
         <div
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={onDropFiles}
-          className={`rounded-2xl border-2 border-dashed p-5 transition-all duration-200 ${dragOver ? "border-blue-500 bg-blue-50 scale-[1.01]" : "border-stroke bg-slate-50/80"}`}
+          className={`rounded-2xl border-2 border-dashed p-5 transition-all duration-200 ${dragOver ? "border-blue-500 bg-blue-100 scale-[1.01]" : "border-blue-200 bg-blue-50/70"}`}
         >
-          <p className="text-sm font-semibold">Drop PDF resumes here</p>
-          <p className="text-xs text-muted mt-1">or browse files and process them to add candidates.</p>
+          <p className="text-sm font-semibold text-blue-900">Drop PDF resumes here</p>
+          <p className="text-xs text-blue-700/80 mt-1">or browse files and process them to add candidates.</p>
           <input
             ref={fileRef}
             type="file"
@@ -565,12 +558,12 @@ function App() {
             Browse PDFs
           </button>
         </div>
-        <div className="mt-3 rounded-2xl border border-stroke bg-slate-50/80 p-3">
-          <p className="text-xs uppercase tracking-wider font-semibold text-muted">Step 2: Selected files</p>
+        <div className="mt-3 rounded-2xl border border-blue-200 bg-blue-50/50 p-3">
+          <p className="text-xs uppercase tracking-wider font-semibold text-blue-800">Step 2: Selected files</p>
           {files.length ? (
             <ul className="mt-2 space-y-1 max-h-28 overflow-auto chat-scroll text-sm">
               {files.map((f, i) => (
-                <li key={`${f.name}-${i}`} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1 border border-stroke">
+                <li key={`${f.name}-${i}`} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2 py-1 border border-blue-100">
                   <span className="truncate min-w-0">{f.name}</span>
                   <button
                     type="button"
@@ -622,7 +615,7 @@ function App() {
         )}
       </section>
 
-      <section className="card-panel p-5">
+      <section className="card-panel panel-workspace p-5">
         <p className="font-display text-lg font-semibold text-ink mb-4">Workspace</p>
         <div className="grid grid-cols-2 gap-2 mb-3">
           <StatTile label="Resumes" value={resumeCount} accent="brand" />
@@ -635,7 +628,7 @@ function App() {
               id="recruiter-filter"
               value={selected}
               onChange={(e) => setSelected(e.target.value)}
-              className="w-full rounded-xl border border-stroke bg-white px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-brand"
+              className="w-full rounded-xl border border-violet-200 bg-violet-50/50 px-3 py-2 text-sm text-ink focus-visible:ring-2 focus-visible:ring-violet-500"
               aria-label="Filter by candidate"
             >
               <option value="All">All Candidates</option>
@@ -651,7 +644,7 @@ function App() {
                 id="me-profile"
                 value={meCandidate}
                 onChange={(e) => setMeCandidate(e.target.value)}
-                className="w-full rounded-xl border border-stroke bg-white px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-brand"
+                className="w-full rounded-xl border border-violet-200 bg-violet-50/50 px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-violet-500"
                 aria-label="Select your profile"
               >
                 {candidates.map((name) => <option key={name} value={name}>{name}</option>)}
@@ -663,19 +656,19 @@ function App() {
                 id="github-username"
                 value={githubUsername}
                 onChange={(e) => setGithubUsername(e.target.value)}
-                className="w-full rounded-xl border border-stroke bg-white px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-brand"
+                className="w-full rounded-xl border border-violet-200 bg-violet-50/50 px-3 py-2 text-sm focus-visible:ring-2 focus-visible:ring-violet-500"
                 placeholder="e.g. octocat"
                 aria-label="GitHub username"
               />
             </div>
           </div>
         )}
-        <div className="rounded-2xl border border-stroke bg-slate-50/80 p-3">
-          <p className="text-xs uppercase tracking-wider font-semibold text-muted">Candidates</p>
+        <div className="rounded-2xl border border-violet-200 bg-violet-50/50 p-3">
+          <p className="text-xs uppercase tracking-wider font-semibold text-violet-800">Candidates</p>
           {candidates.length ? (
             <ul className="mt-2 space-y-1 max-h-32 overflow-auto chat-scroll text-sm">
               {candidates.map((name) => (
-                <li key={name} className="truncate rounded-lg bg-white px-2 py-1 border border-stroke">{name}</li>
+                <li key={name} className="truncate rounded-lg bg-white px-2 py-1 border border-violet-100 text-violet-900">{name}</li>
               ))}
             </ul>
           ) : (
@@ -687,7 +680,7 @@ function App() {
             type="button"
             disabled={busy}
             onClick={() => setConfirmModal({ key: "clear-chat", title: "Clear chat", body: "This will remove all messages in this conversation. You can keep uploading and chatting.", confirmLabel: "Clear chat", variant: "default" })}
-            className="rounded-xl border-2 border-stroke bg-white px-3 py-2.5 text-sm font-semibold hover:bg-slate-50 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500"
+            className="rounded-xl border-2 border-violet-300 bg-violet-50 px-3 py-2.5 text-sm font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-violet-500"
           >
             Clear Chat
           </button>
@@ -695,7 +688,7 @@ function App() {
             type="button"
             disabled={busy}
             onClick={() => setConfirmModal({ key: "clear-data", title: "Clear all data", body: "This will delete all resumes and chat history. This cannot be undone.", confirmLabel: "Clear all data", variant: "danger" })}
-            className="rounded-xl border-2 border-rose-300 bg-rose-50 px-3 py-2.5 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-rose-500"
+            className="rounded-xl border-2 border-rose-300 bg-rose-100 px-3 py-2.5 text-sm font-semibold text-rose-700 hover:bg-rose-200 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-rose-500"
           >
             Clear Data
           </button>
@@ -796,12 +789,12 @@ function App() {
 
           <main
             id="main-content"
-            className="card-panel flex min-h-[74vh] flex-col overflow-hidden"
+            className={`card-panel flex min-h-[74vh] flex-col overflow-hidden chat-area ${mode === "me" ? "me-mode" : ""}`}
             role="main"
           >
-            <header className="border-b border-stroke bg-gradient-to-r from-slate-50 to-blue-50/50 px-6 py-5">
+            <header className={`border-b px-6 py-5 ${mode === "me" ? "chat-header-me" : "chat-header-recruiter"}`}>
               <h2 className="font-display text-xl md:text-2xl font-bold tracking-tight text-ink">{panelTitle}</h2>
-              <p className="mt-1.5 text-sm text-muted">{panelSubtitle}</p>
+              <p className="mt-1.5 text-sm text-slate-600">{panelSubtitle}</p>
             </header>
 
             {!hasResumes && (
@@ -820,22 +813,25 @@ function App() {
                   <div className="empty-state-box px-6 py-8 text-center">
                     <div className="text-4xl mb-3 opacity-80" aria-hidden>💬</div>
                     <p className="text-base font-medium text-ink">{emptyHint}</p>
-                    <p className="mt-2 text-sm text-muted">Or pick a suggestion below to get started.</p>
+                    <p className="mt-2 text-sm text-slate-600">Or pick a suggestion below to get started.</p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-wider font-semibold text-muted mb-3">Suggested questions</p>
+                    <p className="text-xs uppercase tracking-wider font-semibold text-slate-600 mb-3">Suggested questions</p>
                     <div className="flex flex-wrap gap-2">
-                      {(mode === "recruiter" ? RECRUITER_PROMPTS : ME_PROMPTS).map((p) => (
-                        <button
-                          key={p}
-                          type="button"
-                          disabled={busy || !hasResumes}
-                          onClick={() => onSuggestedPrompt(p)}
-                          className="prompt-chip rounded-xl border border-stroke bg-white px-4 py-2.5 text-sm text-ink hover:border-blue-400 hover:bg-blue-50/50 hover:text-blue-700 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-blue-500"
-                        >
-                          {p}
-                        </button>
-                      ))}
+                      {(mode === "recruiter" ? RECRUITER_PROMPTS : ME_PROMPTS).map((p, i) => {
+                        const chipClass = ["chip-blue", "chip-violet", "chip-emerald", "chip-amber"][i % 4];
+                        return (
+                          <button
+                            key={p}
+                            type="button"
+                            disabled={busy || !hasResumes}
+                            onClick={() => onSuggestedPrompt(p)}
+                            className={`prompt-chip rounded-xl border-2 px-4 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-blue-500 ${chipClass}`}
+                          >
+                            {p}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
@@ -852,14 +848,14 @@ function App() {
               {awaitingReply && <TypingBubble mode={mode} />}
             </section>
 
-            <form onSubmit={(e) => sendMessage(e)} className="border-t border-stroke bg-gradient-to-b from-slate-50/80 to-white px-4 py-4 md:px-5">
+            <form onSubmit={(e) => sendMessage(e)} className={`border-t-2 border-slate-200 px-4 py-4 md:px-5 ${mode === "me" ? "input-bar me-mode" : "input-bar"}`}>
               <div className="mx-auto flex max-w-4xl gap-3">
                 <input
                   ref={inputRef}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   placeholder={inputPlaceholder}
-                  className="input-ring flex-1 rounded-xl border-2 border-stroke bg-white px-4 py-3.5 text-[15px] placeholder:text-muted focus:border-blue-500 focus:outline-none"
+                  className="input-ring flex-1 rounded-xl border-2 border-white/80 bg-white/95 px-4 py-3.5 text-[15px] placeholder:text-slate-500 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-400/50"
                   aria-label="Message"
                   disabled={busy}
                   maxLength={2000}
@@ -874,7 +870,7 @@ function App() {
                   Send
                 </button>
               </div>
-              <p className="mx-auto mt-2 max-w-4xl text-xs text-muted text-right">{message.length}/2000</p>
+              <p className="mx-auto mt-2 max-w-4xl text-xs text-slate-600 text-right">{message.length}/2000</p>
             </form>
           </main>
         </div>

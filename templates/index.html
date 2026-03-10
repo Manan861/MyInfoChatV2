@@ -55,6 +55,10 @@
       --brand-light: #eff6ff;
       --mint: #059669;
       --mint-light: #ecfdf5;
+      --violet: #7c3aed;
+      --violet-light: #f5f3ff;
+      --amber: #d97706;
+      --amber-light: #fffbeb;
       --warm: #ea580c;
       --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
       --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
@@ -70,7 +74,7 @@
 
     body {
       font-family: 'Manrope', sans-serif;
-      background: linear-gradient(165deg, #eef2fb 0%, #e8eef9 40%, #f0f9ff 100%);
+      background: linear-gradient(165deg, #eef2fb 0%, #e0e7ff 30%, #ecfdf5 70%, #f0f9ff 100%);
       background-attachment: fixed;
       color: var(--ink);
     }
@@ -125,6 +129,46 @@
     .card-panel:hover {
       box-shadow: var(--shadow-lg);
     }
+    .panel-intake {
+      background: linear-gradient(180deg, #eff6ff 0%, #ffffff 25%);
+      border-left: 4px solid #2563eb;
+    }
+    .panel-workspace {
+      background: linear-gradient(180deg, #f5f3ff 0%, #ffffff 25%);
+      border-left: 4px solid #7c3aed;
+    }
+    .chat-area {
+      background: linear-gradient(180deg, #f8fafc 0%, #eef2fb 50%, #f0f9ff 100%);
+    }
+    .chat-area.me-mode {
+      background: linear-gradient(180deg, #f8fafc 0%, #ecfdf5 50%, #f0fdf4 100%);
+    }
+    .chat-header-recruiter {
+      background: linear-gradient(135deg, #eff6ff 0%, #e0e7ff 50%, #ddd6fe 100%);
+      border-bottom: 2px solid #c7d2fe;
+    }
+    .chat-header-me {
+      background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 50%, #ccfbf1 100%);
+      border-bottom: 2px solid #99f6e4;
+    }
+    .input-bar {
+      background: linear-gradient(180deg, #e0e7ff 0%, #c7d2fe 30%, #ddd6fe 100%);
+    }
+    .input-bar.me-mode {
+      background: linear-gradient(180deg, #ccfbf1 0%, #99f6e4 30%, #a7f3d0 100%);
+    }
+    .bubble-assistant {
+      background: linear-gradient(145deg, #ffffff 0%, #f5f3ff 100%);
+      border-color: #c4b5fd;
+    }
+    .bubble-assistant.me-mode {
+      background: linear-gradient(145deg, #ffffff 0%, #ecfdf5 100%);
+      border-color: #6ee7b7;
+    }
+    .chip-blue { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
+    .chip-violet { background: #f5f3ff; border-color: #c4b5fd; color: #5b21b6; }
+    .chip-emerald { background: #ecfdf5; border-color: #6ee7b7; color: #047857; }
+    .chip-amber { background: #fffbeb; border-color: #fcd34d; color: #b45309; }
     .header-bar {
       background: linear-gradient(135deg, #1e3a5f 0%, #0f172a 100%);
       color: #fff;
